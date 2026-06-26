@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Conversation Screen Hub</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Roboto+Flex:wght@400;500;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "primary-fixed": "#a1f0f4",
+                        "secondary": "#4a6363",
+                        "surface-container-high": "#e6e9e8",
+                        "on-tertiary-container": "#c5dbfb",
+                        "tertiary-fixed": "#d2e4ff",
+                        "surface-container": "#ebeeee",
+                        "outline-variant": "#bec9c9",
+                        "surface-container-highest": "#e0e3e3",
+                        "on-error-container": "#93000a",
+                        "on-secondary": "#ffffff",
+                        "error": "#ba1a1a",
+                        "on-primary-fixed-variant": "#004f52",
+                        "background": "#f7faf9",
+                        "secondary-fixed-dim": "#b1cccb",
+                        "surface-dim": "#d7dbda",
+                        "on-tertiary-fixed-variant": "#334863",
+                        "surface-container-low": "#f1f4f4",
+                        "on-primary-container": "#96e5ea",
+                        "on-surface": "#181c1c",
+                        "on-primary-fixed": "#002021",
+                        "primary": "#004f52",
+                        "tertiary-fixed-dim": "#b2c8e8",
+                        "on-surface-variant": "#3e4949",
+                        "surface-bright": "#f7faf9",
+                        "tertiary-container": "#4b607c",
+                        "on-secondary-container": "#506969",
+                        "on-background": "#181c1c",
+                        "outline": "#6f7979",
+                        "on-tertiary": "#ffffff",
+                        "tertiary": "#334863",
+                        "on-tertiary-fixed": "#031c35",
+                        "on-error": "#ffffff",
+                        "primary-fixed-dim": "#85d3d7",
+                        "secondary-container": "#cce8e7",
+                        "inverse-primary": "#85d3d7",
+                        "inverse-on-surface": "#eef1f1",
+                        "primary-container": "#00696d",
+                        "on-secondary-fixed": "#051f20",
+                        "inverse-surface": "#2d3131",
+                        "secondary-fixed": "#cce8e7",
+                        "on-secondary-fixed-variant": "#324b4b",
+                        "surface-tint": "#00696d",
+                        "on-primary": "#ffffff",
+                        "surface-container-lowest": "#ffffff",
+                        "error-container": "#ffdad6",
+                        "surface": "#f7faf9",
+                        "surface-variant": "#e0e3e3"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "1rem",
+                        "lg": "2rem",
+                        "xl": "3rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "gutter": "16px",
+                        "sm": "8px",
+                        "xs": "4px",
+                        "lg": "24px",
+                        "unit": "8px",
+                        "container-margin": "16px",
+                        "md": "16px",
+                        "xl": "32px"
+                    },
+                    "fontFamily": {
+                        "label-lg": ["Roboto Flex"],
+                        "body-md": ["Roboto Flex"],
+                        "label-sm": ["Roboto Flex"],
+                        "body-lg": ["Roboto Flex"],
+                        "headline-lg-mobile": ["Roboto Flex"],
+                        "title-lg": ["Roboto Flex"],
+                        "headline-lg": ["Roboto Flex"],
+                        "display-lg": ["Roboto Flex"],
+                        "title-md": ["Roboto Flex"]
+                    },
+                    "fontSize": {
+                        "label-lg": ["14px", { "lineHeight": "20px", "letterSpacing": "0.1px", "fontWeight": "500" }],
+                        "body-md": ["14px", { "lineHeight": "20px", "letterSpacing": "0.25px", "fontWeight": "400" }],
+                        "label-sm": ["11px", { "lineHeight": "16px", "letterSpacing": "0.5px", "fontWeight": "500" }],
+                        "body-lg": ["16px", { "lineHeight": "24px", "letterSpacing": "0.5px", "fontWeight": "400" }],
+                        "headline-lg-mobile": ["28px", { "lineHeight": "36px", "fontWeight": "400" }],
+                        "title-lg": ["22px", { "lineHeight": "28px", "fontWeight": "400" }],
+                        "headline-lg": ["32px", { "lineHeight": "40px", "fontWeight": "400" }],
+                        "display-lg": ["57px", { "lineHeight": "64px", "letterSpacing": "-0.25px", "fontWeight": "400" }],
+                        "title-md": ["16px", { "lineHeight": "24px", "letterSpacing": "0.15px", "fontWeight": "500" }]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        .pulse-ring {
+            animation: pulse 1.5s infinite cubic-bezier(0.215, 0.61, 0.355, 1);
+        }
+        @keyframes pulse {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(0, 105, 109, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(0, 105, 109, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(0, 105, 109, 0); }
+        }
+        .dark .pulse-ring {
+            animation: pulse-dark 1.5s infinite cubic-bezier(0.215, 0.61, 0.355, 1);
+        }
+        @keyframes pulse-dark {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(133, 211, 215, 0.4); }
+            70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(133, 211, 215, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(133, 211, 215, 0); }
+        }
+        .waveform-bar {
+            animation: bounce 1s infinite alternate ease-in-out;
+        }
+        .waveform-bar:nth-child(1) { animation-delay: 0s; }
+        .waveform-bar:nth-child(2) { animation-delay: 0.2s; }
+        .waveform-bar:nth-child(3) { animation-delay: 0.4s; }
+        .waveform-bar:nth-child(4) { animation-delay: 0.6s; }
+        @keyframes bounce {
+            0% { transform: scaleY(0.3); }
+            100% { transform: scaleY(1); }
+        }
+        
+        .phone-frame {
+            width: 360px;
+            height: 720px;
+            overflow: hidden;
+            position: relative;
+        }
+        
+        /* Hide scrollbar for thread container */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background text-on-background dark:bg-[#181c1c] dark:text-[#e0e3e3] p-lg flex flex-col gap-xl items-center min-h-screen">
+<header class="text-center mb-md">
+<h1 class="font-headline-lg text-headline-lg text-primary dark:text-primary-fixed-dim font-bold">Conversation States</h1>
+<p class="font-body-lg text-body-lg text-on-surface-variant dark:text-outline-variant mt-sm">Showcasing Assistant Interaction Patterns</p>
+</header>
+<div class="flex flex-wrap justify-center gap-xl w-full max-w-[1600px]">
+<!-- (a) Idle State (Dark Mode) -->
+<div class="flex flex-col items-center">
+<h2 class="font-title-md text-title-md mb-sm text-on-surface-variant dark:text-outline-variant">(a) Idle</h2>
+<div class="phone-frame bg-surface dark:bg-surface border-4 border-surface-container-highest dark:border-[#3e4949] rounded-[2rem] flex flex-col">
+<!-- Top App Bar -->
+<div class="flex items-center justify-between px-md h-16 bg-surface dark:bg-surface shrink-0 z-10 w-full transition-colors duration-200">
+<div class="flex items-center gap-sm">
+<span class="material-symbols-outlined text-primary dark:text-primary-fixed-dim" style="font-variation-settings: 'FILL' 1;">lock</span>
+<span class="font-title-lg text-title-lg font-bold text-on-surface dark:text-on-surface">Assistant</span>
+</div>
+<span class="material-symbols-outlined text-on-surface-variant dark:text-on-surface-variant">cloud_off</span>
+</div>
+<!-- Message Thread -->
+<div class="flex-1 overflow-y-auto no-scrollbar p-md flex flex-col gap-lg pb-[100px]">
+<div class="flex justify-start">
+<div class="bg-secondary-container dark:bg-secondary text-on-secondary-container dark:text-on-secondary p-md rounded-2xl rounded-tl-sm max-w-[85%] font-body-lg text-body-lg shadow-sm">
+                            How can I help you today?
+                        </div>
+</div>
+</div>
+<!-- Bottom Input Area -->
+<div class="absolute bottom-0 w-full bg-surface-container dark:bg-[#e0e3e3] p-sm flex items-end gap-sm z-20 shadow-[0_-2px_10px_rgba(0,0,0,0.05)] dark:shadow-[0_-2px_10px_rgba(0,0,0,0.2)]">
+<button class="p-3 text-on-surface-variant dark:text-[#3e4949] hover:bg-surface-container-high dark:hover:bg-[#d7dbda] rounded-full transition-colors shrink-0 flex items-center justify-center">
+<span class="material-symbols-outlined">camera</span>
+</button>
+<div class="flex-1 bg-surface dark:bg-[#f7faf9] rounded-[28px] min-h-[56px] flex items-center px-md border border-outline-variant dark:border-[#bec9c9]">
+<input class="w-full bg-transparent border-none focus:ring-0 text-on-surface dark:text-[#181c1c] font-body-md text-body-md placeholder-on-surface-variant dark:placeholder-[#3e4949]" placeholder="Type or say something..." type="text"/>
+</div>
+<button class="bg-primary-container dark:bg-[#00696d] text-on-primary-container dark:text-[#96e5ea] h-[56px] w-[56px] rounded-[28px] flex items-center justify-center shadow-md shrink-0 hover:bg-primary dark:hover:bg-[#004f52] transition-colors">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">mic</span>
+</button>
+</div>
+</div>
+</div>
+<!-- (b) Listening State -->
+<div class="flex flex-col items-center">
+<h2 class="font-title-md text-title-md mb-sm text-on-surface-variant dark:text-outline-variant">(b) Listening</h2>
+<div class="phone-frame bg-surface dark:bg-surface border-4 border-surface-container-highest dark:border-[#3e4949] rounded-[2rem] flex flex-col">
+<!-- Top App Bar -->
+<div class="flex items-center justify-between px-md h-16 bg-surface dark:bg-surface shrink-0 z-10 w-full">
+<div class="flex items-center gap-sm">
+<span class="material-symbols-outlined text-primary dark:text-primary-fixed-dim" style="font-variation-settings: 'FILL' 1;">lock</span>
+<span class="font-title-lg text-title-lg font-bold text-on-surface dark:text-on-surface">Assistant</span>
+</div>
+<span class="material-symbols-outlined text-on-surface-variant dark:text-on-surface-variant">cloud_off</span>
+</div>
+<!-- Message Thread -->
+<div class="flex-1 overflow-y-auto no-scrollbar p-md flex flex-col gap-lg pb-[120px]">
+<div class="flex justify-start">
+<div class="bg-secondary-container dark:bg-secondary text-on-secondary-container dark:text-on-secondary p-md rounded-2xl rounded-tl-sm max-w-[85%] font-body-lg text-body-lg shadow-sm">
+                            What would you like to know about this location?
+                        </div>
+</div>
+</div>
+<!-- Listening Overlay / Bottom Bar -->
+<div class="absolute bottom-0 w-full bg-surface-container dark:bg-[#e0e3e3] p-lg flex flex-col items-center justify-center gap-md z-20 rounded-t-[2rem] shadow-[0_-10px_30px_rgba(0,0,0,0.1)] dark:shadow-[0_-10px_30px_rgba(0,0,0,0.3)] min-h-[160px]">
+<div class="flex items-end gap-1 h-8 mb-2">
+<div class="w-1.5 bg-primary dark:bg-[#004f52] rounded-full waveform-bar h-full"></div>
+<div class="w-1.5 bg-primary dark:bg-[#004f52] rounded-full waveform-bar h-1/2"></div>
+<div class="w-1.5 bg-primary dark:bg-[#004f52] rounded-full waveform-bar h-3/4"></div>
+<div class="w-1.5 bg-primary dark:bg-[#004f52] rounded-full waveform-bar h-1/3"></div>
+</div>
+<p class="font-title-md text-title-md text-on-surface-variant dark:text-[#3e4949]">Listening...</p>
+<button class="bg-primary-container dark:bg-[#00696d] text-on-primary-container dark:text-[#96e5ea] h-16 w-16 rounded-full flex items-center justify-center shadow-lg shrink-0 pulse-ring mt-2">
+<span class="material-symbols-outlined text-[32px]" style="font-variation-settings: 'FILL' 1;">mic</span>
+</button>
+</div>
+</div>
+</div>
+<!-- (c) Loading Vision State -->
+<div class="flex flex-col items-center">
+<h2 class="font-title-md text-title-md mb-sm text-on-surface-variant dark:text-outline-variant">(c) Loading Vision</h2>
+<div class="phone-frame bg-surface dark:bg-surface border-4 border-surface-container-highest dark:border-[#3e4949] rounded-[2rem] flex flex-col">
+<!-- Top App Bar -->
+<div class="flex items-center justify-between px-md h-16 bg-surface dark:bg-surface shrink-0 z-10 w-full">
+<div class="flex items-center gap-sm">
+<span class="material-symbols-outlined text-primary dark:text-primary-fixed-dim" style="font-variation-settings: 'FILL' 1;">lock</span>
+<span class="font-title-lg text-title-lg font-bold text-on-surface dark:text-on-surface">Assistant</span>
+</div>
+<span class="material-symbols-outlined text-on-surface-variant dark:text-on-surface-variant">cloud_off</span>
+</div>
+<!-- Message Thread -->
+<div class="flex-1 overflow-y-auto no-scrollbar p-md flex flex-col gap-lg pb-[100px]">
+<!-- User Image Capture -->
+<div class="flex justify-end">
+<div class="flex flex-col gap-sm items-end max-w-[85%]">
+<div class="w-48 h-32 rounded-xl overflow-hidden border-2 border-surface-container-high dark:border-[#e6e9e8] shadow-sm">
+<img class="w-full h-full object-cover" data-alt="A detailed view of a modern architectural building featuring sharp angles, large glass windows reflecting a clear blue sky, and minimalist concrete structures in an urban setting during golden hour." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBYuU90-XN5pq-TWkHd8nt8tegAP60OPK99HdRDlLoGoABz_0L7TuzL3iPutck6Q2Sp97MG8ANvaNre7evMOshLZwjtOrr4-srmc-AIYb5ViIfyNQP263EefeFXpsrD-tfAA-6hRptCVk5JFyVFjagv73PD1lBEvStPQFl0nM5lEj727Zol6gufYNR3MH4gtMkURj2sem2omVe6Ys2mW18OnzMACxpLx6mzArh2rx1suK2sngbH9dCqwvi_6K0IG-qc1MsuiWyCU1K5"/>
+</div>
+<div class="bg-primary dark:bg-[#004f52] text-on-primary dark:text-[#ffffff] p-md rounded-2xl rounded-tr-sm font-body-lg text-body-lg shadow-sm">
+                                What style of architecture is this?
+                            </div>
+</div>
+</div>
+<!-- Assistant Loading -->
+<div class="flex justify-start">
+<div class="bg-surface-container-low dark:bg-[#f1f4f4] text-on-surface-variant dark:text-[#3e4949] py-sm px-md rounded-2xl rounded-tl-sm flex items-center gap-sm border border-outline-variant dark:border-[#bec9c9]">
+<span class="material-symbols-outlined animate-spin text-primary dark:text-[#004f52]">progress_activity</span>
+<span class="font-body-md text-body-md italic">loading vision...</span>
+</div>
+</div>
+</div>
+<!-- Bottom Input Area -->
+<div class="absolute bottom-0 w-full bg-surface-container dark:bg-[#e0e3e3] p-sm flex items-end gap-sm z-20">
+<button class="p-3 text-on-surface-variant dark:text-[#3e4949] rounded-full flex items-center justify-center opacity-50 cursor-not-allowed">
+<span class="material-symbols-outlined">camera</span>
+</button>
+<div class="flex-1 bg-surface dark:bg-[#f7faf9] rounded-[28px] min-h-[56px] flex items-center px-md opacity-50">
+<input class="w-full bg-transparent border-none text-on-surface dark:text-[#181c1c] font-body-md text-body-md cursor-not-allowed" disabled="" placeholder="Wait a moment..." type="text"/>
+</div>
+<button class="bg-surface-container-highest dark:bg-[#e0e3e3] text-on-surface-variant dark:text-[#3e4949] h-[56px] w-[56px] rounded-[28px] flex items-center justify-center opacity-50 cursor-not-allowed shrink-0">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">mic</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+</body></html>
