@@ -1,5 +1,6 @@
 package com.example.voiceassistant
 
+import com.example.voiceassistant.data.ConversationStore
 import com.google.ai.edge.litertlm.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -12,11 +13,27 @@ class VoiceAssistant(
     private val modelPath: String,
     private val scope: CoroutineScope,
 ) {
+    companion object {
+        private const val NEW_CHAT_TITLE = "New chat"
+    }
+
     private lateinit var engine: Engine
     private var conversation: Conversation? = null
 
     private val kokoroDir = java.io.File(context.filesDir, KokoroTts.MODEL_DIR_NAME)
     private var kokoro: KokoroTts? = null
+
+    // Local-first conversation history. `history` is the in-memory source for display (updated
+    // synchronously so finalizing a turn is flicker-free); `store` is the durable Room backing.
+    private val store = ConversationStore(context)
+    private val history = mutableListOf<Message>()
+    @Volatile private var activeConversationId: Long = 0L
+
+    // Per-turn bookkeeping so a turn is persisted once, after both generation and speech finish.
+    @Volatile private var currentUserText: String? = null
+    @Volatile private var currentTurnConversationId: Long = 0L
+    private val currentAssistantFull = StringBuilder()
+    @Volatile private var generationComplete = false
 
     // Maps an in-flight utterance id to its sentence text so the on-screen transcript
     // can be revealed in lockstep with the voice (instead of dumping the full LLM output).
@@ -72,6 +89,20 @@ class VoiceAssistant(
         
         // Initial check for model and STT
         updateModelAvailability()
+
+        // Restore the most-recent conversation (creating an empty one if there are none).
+        scope.launch {
+            try {
+                var convos = withContext(Dispatchers.IO) { store.loadConversations() }
+                if (convos.isEmpty()) {
+                    withContext(Dispatchers.IO) { store.createConversation(NEW_CHAT_TITLE) }
+                    convos = withContext(Dispatchers.IO) { store.loadConversations() }
+                }
+                activateConversation(convos.first().id)
+            } catch (e: Exception) {
+                android.util.Log.e("VoiceAssistant", "Failed to load conversations", e)
+            }
+        }
     }
 
     fun setPermissionGranted(granted: Boolean) {
@@ -117,6 +148,8 @@ class VoiceAssistant(
         pendingTexts.remove(utteranceId)
         if (pendingUtterances.decrementAndGet() <= 0) {
             _uiState.update { it.copy(isSpeaking = false) }
+            // Speech drained — persist the turn if generation has also finished.
+            maybeFinalizeTurn()
         }
     }
 
@@ -232,22 +265,7 @@ class VoiceAssistant(
                 android.util.Log.i("VoiceAssistant", "Gemma engine initialized successfully with CPU backend")
             }
 
-            conversation = engine.createConversation(
-                ConversationConfig(
-                    systemInstruction = Contents.of(
-                        "You are Alex, a warm, helpful, calm, and reassuring voice assistant. " +
-                        "Write your response exactly how it should be spoken out loud. " +
-                        "Always use common contractions (e.g. say 'I'm', 'don't', 'it's', 'we're', 'can't' instead of full words). " +
-                        "Keep your sentences very short and conversational (no more than 15-20 words per sentence, one or two sentences total). " +
-                        "Do not use markdown, asterisks, bold, or lists. " +
-                        "Write out all numbers, dates, times, and abbreviations fully as they sound (e.g. 'one hundred' instead of '100', 'June seventeenth' instead of 'June 17', 'three thirty p m' instead of '3:30 PM', 'doctor' instead of 'Dr.'). " +
-                        "Include short thinking pauses or filler words (like 'uh', 'well', 'um', 'let's see') naturally, but very sparingly (no more than once per response). " +
-                        "Vary your opening acknowledgements (avoid starting with 'Sure', 'Okay', or 'Got it' repeatedly). " +
-                        "End turns with a simple, natural follow-up question."
-                    ),
-                    samplerConfig = SamplerConfig(topK = 40, topP = 0.95, temperature = 0.8),
-                )
-            )
+            conversation = engine.createConversation(conversationConfig())
             isInitialized = true
             _uiState.update { it.copy(assistantResponse = "Ready! Tap Start.") }
         } catch (e: Exception) {
@@ -269,8 +287,7 @@ class VoiceAssistant(
                     
                     val utterance = listenForUtterance()
                     if (utterance.isNotBlank()) {
-                        _uiState.update { it.copy(lastUserUtterance = utterance, assistantResponse = "...") }
-                        handleTurn(utterance)
+                        beginTurn(utterance)
                     } else {
                         delay(500)
                     }
@@ -335,6 +352,232 @@ class VoiceAssistant(
         result
     }
 
+    private fun conversationConfig() = ConversationConfig(
+        systemInstruction = Contents.of(
+            "You are Alex, a warm, helpful, calm, and reassuring voice assistant. " +
+            "Write your response exactly how it should be spoken out loud. " +
+            "Always use common contractions (e.g. say 'I'm', 'don't', 'it's', 'we're', 'can't' instead of full words). " +
+            "Keep your sentences very short and conversational (no more than 15-20 words per sentence, one or two sentences total). " +
+            "Do not use markdown, asterisks, bold, or lists. " +
+            "Write out all numbers, dates, times, and abbreviations fully as they sound (e.g. 'one hundred' instead of '100', 'June seventeenth' instead of 'June 17', 'three thirty p m' instead of '3:30 PM', 'doctor' instead of 'Dr.'). " +
+            "Include short thinking pauses or filler words (like 'uh', 'well', 'um', 'let's see') naturally, but very sparingly (no more than once per response). " +
+            "Vary your opening acknowledgements (avoid starting with 'Sure', 'Okay', or 'Got it' repeatedly). " +
+            "End turns with a simple, natural follow-up question."
+        ),
+        samplerConfig = SamplerConfig(topK = 40, topP = 0.95, temperature = 0.8),
+    )
+
+    /** Recreate the model session so context doesn't bleed across conversations. */
+    private fun resetModelSession() {
+        if (!isInitialized) return
+        try {
+            conversation?.close()
+            conversation = engine.createConversation(conversationConfig())
+        } catch (e: Exception) {
+            android.util.Log.e("VoiceAssistant", "Failed to reset model session", e)
+        }
+    }
+
+    /** Make [id] the open conversation: load its turns into the thread and refresh the drawer. */
+    private suspend fun activateConversation(id: Long) {
+        activeConversationId = id
+        val turns = withContext(Dispatchers.IO) { store.loadTurns(id) }
+        history.clear()
+        turns.forEach { t ->
+            history.add(
+                Message(
+                    id = t.id,
+                    role = if (t.role == "user") Role.USER else Role.ASSISTANT,
+                    text = t.text
+                )
+            )
+        }
+        val convos = withContext(Dispatchers.IO) { store.loadConversations() }
+        _uiState.update {
+            it.copy(
+                messages = history.toList(),
+                conversations = convos.map { c -> ConversationSummary(c.id, c.title) },
+                activeConversationId = id,
+                lastUserUtterance = "",
+                assistantResponse = ""
+            )
+        }
+    }
+
+    /** Refresh just the drawer list (order + titles) without touching the open thread. */
+    private fun refreshConversations() {
+        scope.launch {
+            try {
+                val convos = withContext(Dispatchers.IO) { store.loadConversations() }
+                _uiState.update {
+                    it.copy(conversations = convos.map { c -> ConversationSummary(c.id, c.title) })
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("VoiceAssistant", "Failed to refresh conversations", e)
+            }
+        }
+    }
+
+    /** Start a fresh, empty conversation and open it. */
+    fun newConversation() {
+        scope.launch {
+            stopSpeaking()
+            resetModelSession()
+            val id = withContext(Dispatchers.IO) { store.createConversation(NEW_CHAT_TITLE) }
+            activateConversation(id)
+        }
+    }
+
+    /** Open an existing conversation. */
+    fun switchConversation(id: Long) {
+        if (id == activeConversationId) return
+        scope.launch {
+            stopSpeaking()
+            resetModelSession()
+            activateConversation(id)
+        }
+    }
+
+    /** Delete a conversation; if it was open, fall back to the most-recent remaining one. */
+    fun deleteConversation(id: Long) {
+        scope.launch {
+            withContext(Dispatchers.IO) { store.deleteConversation(id) }
+            var convos = withContext(Dispatchers.IO) { store.loadConversations() }
+            if (convos.isEmpty()) {
+                withContext(Dispatchers.IO) { store.createConversation(NEW_CHAT_TITLE) }
+                convos = withContext(Dispatchers.IO) { store.loadConversations() }
+            }
+            if (id == activeConversationId) {
+                stopSpeaking()
+                resetModelSession()
+                activateConversation(convos.first().id)
+            } else {
+                _uiState.update {
+                    it.copy(conversations = convos.map { c -> ConversationSummary(c.id, c.title) })
+                }
+            }
+        }
+    }
+
+    /** Title an untitled chat from its first user message. */
+    private fun maybeTitleConversation(conversationId: Long, firstUserText: String) {
+        val title = firstUserText.lineSequence().firstOrNull()?.trim().orEmpty()
+            .let { if (it.length > 40) it.take(40).trimEnd() + "…" else it }
+            .ifBlank { NEW_CHAT_TITLE }
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) { store.renameConversation(conversationId, title) }
+                refreshConversations()
+            } catch (e: Exception) {
+                android.util.Log.e("VoiceAssistant", "Failed to title conversation", e)
+            }
+        }
+    }
+
+    /**
+     * Run a one-off text turn (typed input). Independent of the voice loop; ignored if the engine
+     * isn't ready or another turn is mid-flight.
+     */
+    fun submitText(text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        if (!isInitialized) {
+            _uiState.update { it.copy(error = "The assistant is still starting up. One moment…") }
+            return
+        }
+        if (currentUserText != null || isSpeaking()) return
+        beginTurn(trimmed)
+    }
+
+    /** Persist the user message, show a thinking placeholder, and kick off inference. */
+    private fun beginTurn(userText: String) {
+        currentUserText = userText
+        currentTurnConversationId = activeConversationId
+        currentAssistantFull.setLength(0)
+        generationComplete = false
+
+        // First user message in a chat names it.
+        val isFirstUserMessage = history.none { it.role == Role.USER }
+
+        appendMessage(Role.USER, userText)
+        // "…" is the thinking placeholder; the lockstep reveal overwrites it once speech starts.
+        _uiState.update { it.copy(lastUserUtterance = userText, assistantResponse = "…", error = null) }
+
+        if (isFirstUserMessage) {
+            maybeTitleConversation(currentTurnConversationId, userText)
+        }
+
+        handleTurn(userText)
+    }
+
+    /** Append to the in-memory thread (synchronous, drives the UI) and persist durably. */
+    private fun appendMessage(role: Role, text: String) {
+        val message = Message(id = System.nanoTime(), role = role, text = text)
+        history.add(message)
+        _uiState.update { it.copy(messages = history.toList()) }
+        val roleTag = if (role == Role.USER) "user" else "assistant"
+        val conversationId = currentTurnConversationId
+        scope.launch(Dispatchers.IO) {
+            try {
+                store.append(conversationId, roleTag, text)
+            } catch (e: Exception) {
+                android.util.Log.e("VoiceAssistant", "Failed to persist $roleTag message", e)
+            }
+        }
+    }
+
+    /**
+     * Finalize the active turn once generation has finished AND all speech has drained. Persists the
+     * assistant message and clears the live streaming bubble in one atomic UI update (no flicker).
+     */
+    @Synchronized
+    private fun maybeFinalizeTurn() {
+        if (!generationComplete) return
+        if (pendingUtterances.get() > 0) return
+        val user = currentUserText ?: return  // already finalized / no active turn
+        currentUserText = null
+
+        val full = currentAssistantFull.toString().trim()
+        val conversationId = currentTurnConversationId
+        if (full.isNotEmpty()) {
+            val message = Message(id = System.nanoTime(), role = Role.ASSISTANT, text = full)
+            history.add(message)
+            scope.launch(Dispatchers.IO) {
+                try {
+                    store.append(conversationId, "assistant", full)
+                } catch (e: Exception) {
+                    android.util.Log.e("VoiceAssistant", "Failed to persist assistant message", e)
+                }
+            }
+        }
+        _uiState.update {
+            it.copy(messages = history.toList(), assistantResponse = "", isSpeaking = false)
+        }
+        // Bubble the just-updated conversation to the top of the drawer.
+        refreshConversations()
+    }
+
+    /** Empty the active conversation (memory + storage), keeping it as a fresh chat. */
+    fun clearHistory() {
+        val id = activeConversationId
+        scope.launch {
+            stopSpeaking()
+            resetModelSession()
+            currentUserText = null
+            history.clear()
+            _uiState.update { it.copy(messages = emptyList(), lastUserUtterance = "", assistantResponse = "") }
+            try {
+                withContext(Dispatchers.IO) {
+                    store.clearTurns(id)
+                    store.renameConversation(id, NEW_CHAT_TITLE)
+                }
+                refreshConversations()
+            } catch (e: Exception) {
+                android.util.Log.e("VoiceAssistant", "Failed to clear conversation", e)
+            }
+        }
+    }
+
     private fun handleTurn(userText: String) {
         val convo = conversation ?: return
         engineProcessing.set(true)
@@ -349,7 +592,9 @@ class VoiceAssistant(
             try {
                 convo.sendMessageAsync(userText)
                     .collect { chunk ->
-                        sentenceBuffer.append(chunk.toString())
+                        val piece = chunk.toString()
+                        sentenceBuffer.append(piece)
+                        currentAssistantFull.append(piece)
                         firstAudioEmitted = flushCompletedSentences(sentenceBuffer, firstAudioEmitted)
                     }
 
@@ -360,6 +605,10 @@ class VoiceAssistant(
                 android.util.Log.e("VoiceAssistant", "Error in turn handling", e)
             } finally {
                 engineProcessing.set(false)
+                // Generation done; finalize now if speech has already drained (e.g. empty reply),
+                // otherwise the last utterance's onDone will trigger it.
+                generationComplete = true
+                maybeFinalizeTurn()
             }
         }
     }
@@ -423,6 +672,9 @@ class VoiceAssistant(
         turnJob?.cancel()
         kokoro?.stop()
         tts.stop()
+        // Persist whatever the assistant produced before the barge-in, then close out the turn.
+        generationComplete = true
+        maybeFinalizeTurn()
     }
 
     fun interrupt() {
@@ -515,5 +767,6 @@ class VoiceAssistant(
         }
         kokoro?.shutdown()
         tts.shutdown()
+        store.close()
     }
 }

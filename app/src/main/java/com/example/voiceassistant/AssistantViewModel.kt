@@ -180,6 +180,26 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         assistant.interrupt()
     }
 
+    fun submitText(text: String) {
+        assistant.submitText(text)
+    }
+
+    fun clearHistory() {
+        assistant.clearHistory()
+    }
+
+    fun newConversation() {
+        assistant.newConversation()
+    }
+
+    fun switchConversation(id: Long) {
+        assistant.switchConversation(id)
+    }
+
+    fun deleteConversation(id: Long) {
+        assistant.deleteConversation(id)
+    }
+
     fun installVoiceData() {
         try {
             val intent = android.content.Intent(android.speech.tts.TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA).apply {
