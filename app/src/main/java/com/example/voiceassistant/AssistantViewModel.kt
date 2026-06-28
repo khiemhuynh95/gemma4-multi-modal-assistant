@@ -184,6 +184,24 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         assistant.submitText(text)
     }
 
+    /** Stage a picked image (Photo Picker) for the next turn. */
+    fun attachImage(uri: android.net.Uri) = attach(uri, AttachmentKind.IMAGE)
+
+    /** Stage a picked audio file (document picker) for the next turn. */
+    fun attachAudio(uri: android.net.Uri) = attach(uri, AttachmentKind.AUDIO)
+
+    private fun attach(uri: android.net.Uri, kind: AttachmentKind) {
+        val resolver = getApplication<Application>().contentResolver
+        val ext = android.webkit.MimeTypeMap.getSingleton()
+            .getExtensionFromMimeType(resolver.getType(uri))
+            ?: if (kind == AttachmentKind.IMAGE) "jpg" else "mp3"
+        assistant.attachMedia(uri, kind, ext)
+    }
+
+    fun clearAttachment() {
+        assistant.clearPendingAttachment()
+    }
+
     fun clearHistory() {
         assistant.clearHistory()
     }

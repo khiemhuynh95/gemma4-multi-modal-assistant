@@ -11,8 +11,9 @@ An on-device, fully private multimodal voice assistant for Android. The model ru
 ## Scope (Phase 1) — and hard non-goals
 
 In scope:
-- On-device inference with Gemma 4 E2B via LiteRT-LM (text + image; audio via existing speech-to-text).
+- On-device inference with Gemma 4 E2B via LiteRT-LM (text + image + audio file input; live audio via existing speech-to-text).
 - Three input modalities: voice (`SpeechRecognizer`), camera (CameraX, new), text.
+- **Media file attachments:** attach an image (Android Photo Picker) or an audio file (document picker) to a turn; the model answers about it on-device. **No video** — LiteRT-LM 0.13.1 exposes only Text / Image / Audio `Content` types, so video is unsupported (frame-sampling a clip into images is deferred, not built or stubbed).
 - Two screens: Conversation (hub) and Camera capture.
 - Local-first persistence of the conversation.
 - Streaming responses with text-to-speech + live captions.

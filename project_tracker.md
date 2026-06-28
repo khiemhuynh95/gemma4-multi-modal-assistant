@@ -4,7 +4,7 @@ Phase 1 — on-device multimodal showcase. Keep this current: tick items as done
 
 Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 
-Current status: **M0 done; M1 UI shell in place (visual states wired; text/image/vision turns pending engine work).**
+Current status: **M0 done; M1 UI shell in place; image/audio file attachments shipped (Photo Picker + audio document picker → on-device multimodal turn, persisted). Camera (M2) still pending; video unsupported by the runtime.**
 
 ## M0 — Theme & project setup
 - [x] Compose Material 3 theme from `DESIGN.md`: `ColorScheme` (light + dark), `Typography`, `Shapes` (28 / 20 / pill) in `ui/theme/`. `DESIGN.md` authored from the mockup tokens.
@@ -33,13 +33,14 @@ Acceptance: all states render to the mockup; a text turn round-trips through the
 Acceptance: capture an image and hand it to the Conversation turn with the chosen intent.
 
 ## M3 — Multimodal engine
-- [ ] `MultimodalEngine` wrapping the LiteRT-LM E2B session (confirm image-input API first).
-- [ ] `ensureVisionModelLoaded()` — lazy, one-time; drives the loading-vision state.
-- [ ] `buildPrompt()` — media before text.
-- [ ] `InferenceConfig` + `configFor()` — visual budget + thinking per intent.
-- [ ] `runInference()` — token stream.
+- [~] LiteRT-LM image-input API confirmed (0.13.1: `Content.ImageFile`/`AudioFile`, `Contents.of(...)`, `sendMessageAsync(Contents): Flow`). Wired directly in `VoiceAssistant.handleTurn` for the file-attach path; a standalone `MultimodalEngine` wrapper is still optional.
+- [~] Vision/audio sub-models enabled via `EngineConfig(visionBackend, audioBackend, maxNumImages)`; they map in on first use. No separate `ensureVisionModelLoaded()` API exists in 0.13.1.
+- [x] Media before text — `Contents.of(media, Content.Text(prompt))`.
+- [ ] `InferenceConfig` + `configFor()` — visual budget + thinking per intent (still todo).
+- [x] `runInference()` token stream — reuses the existing streaming/sentence-handoff path.
+- **Video:** unsupported — the runtime has no video `Content` type (frame-sampling deferred).
 
-Acceptance: an image + question produces a streamed on-device answer.
+Acceptance: an image **or audio** attachment + question produces a streamed on-device answer. ✅ (image/audio file path)
 
 ## M4 — Orchestration
 - [ ] Wire inputs (voice via `SpeechRecognizer`, camera, text) → `TurnInput` → `buildPrompt` → `runInference`.
@@ -49,7 +50,7 @@ Acceptance: an image + question produces a streamed on-device answer.
 Acceptance: voice, text, and image turns all stream answer + speech; interrupt works.
 
 ## M5 — Persistence
-- [~] `ConversationStore` (Room v2): `conversations` + `turns` tables done for **text turns** (multi-conversation; v1→v2 migration backfills the old single thread). Image-ref handling still todo (lands with M2/M3 images).
+- [x] `ConversationStore` (Room v3): `conversations` + `turns` tables (multi-conversation; v1→v2 backfills the old single thread). v2→v3 adds `mediaPath`/`mediaKind` so image/audio attachments persist and restore in the thread; `saveMedia` copies picked Uris into `filesDir/media/`.
 - [x] Save each turn; restore on launch. In-memory `history` drives the UI (flicker-free finalize); Room is the durable backing.
 - [x] **Multiple conversations** via navigation drawer: new chat, switch, delete; auto-title from first message; session reset on switch (`resetModelSession`). `clearHistory()` empties the active chat ("Clear conversation" in settings).
 - [ ] **Restore model context on switch** — opening an old chat shows the transcript but doesn't replay it into the session (model has no memory of earlier turns). Folds into the windowed/summarized prompt work below.
@@ -73,7 +74,7 @@ Turns are finalized once **both** generation and speech have drained (`maybeFina
 Acceptance: the Definition of Done in `CLAUDE.md` passes on a real device.
 
 ## Notes / open questions
-- LiteRT-LM image-input + session API: confirm against the runtime version before M3.
+- LiteRT-LM image-input + session API: ✅ confirmed (0.13.1 — Text/Image/Audio `Content`, no video; `sendMessageAsync(Contents): Flow`).
 - Native audio (E2B ASR) is a fast-follow to replace `SpeechRecognizer` — not in Phase 1.
 - `conversation.html` ships idle / listening / loading-vision only; speaking + error states still need design.
 - Decide a default visual token budget per intent and the summary cadence for long-thread prompt assembly.

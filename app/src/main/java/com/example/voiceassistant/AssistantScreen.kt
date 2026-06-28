@@ -1,6 +1,10 @@
 package com.example.voiceassistant
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -15,13 +19,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowDropDown
+import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
@@ -33,6 +41,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -100,7 +110,10 @@ fun AssistantScreen(viewModel: AssistantViewModel) {
                         scope.launch {
                             snackbarHostState.showSnackbar("Camera capture is coming soon.")
                         }
-                    }
+                    },
+                    onPickImage = { uri -> viewModel.attachImage(uri) },
+                    onPickAudio = { uri -> viewModel.attachAudio(uri) },
+                    onClearAttachment = { viewModel.clearAttachment() }
                 )
             }
         }
@@ -272,7 +285,7 @@ private fun MessageThread(
         // Persisted conversation history.
         uiState.messages.forEach { message ->
             when (message.role) {
-                Role.USER -> UserBubble(text = message.text)
+                Role.USER -> UserBubble(text = message.text, attachment = message.attachment)
                 Role.ASSISTANT -> AssistantBubble(text = message.text)
             }
         }
@@ -324,7 +337,7 @@ private fun AssistantBubble(text: String, speaking: Boolean = false) {
 }
 
 @Composable
-private fun UserBubble(text: String) {
+private fun UserBubble(text: String, attachment: Attachment? = null) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         Surface(
             color = MaterialTheme.colorScheme.primary,
@@ -332,11 +345,44 @@ private fun UserBubble(text: String) {
             shape = RoundedCornerShape(topStart = 20.dp, topEnd = 4.dp, bottomEnd = 20.dp, bottomStart = 20.dp),
             modifier = Modifier.widthIn(max = BubbleMaxWidth)
         ) {
-            Text(
-                text = text,
+            Column(
                 modifier = Modifier.padding(16.dp),
-                style = MaterialTheme.typography.bodyLarge
-            )
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                attachment?.let { BubbleAttachment(it) }
+                if (text.isNotBlank()) {
+                    Text(text = text, style = MaterialTheme.typography.bodyLarge)
+                }
+            }
+        }
+    }
+}
+
+/** Render an attached image thumbnail (or an audio chip) above the user's text in the bubble. */
+@Composable
+private fun BubbleAttachment(attachment: Attachment) {
+    when (attachment.kind) {
+        AttachmentKind.IMAGE -> {
+            val thumb = remember(attachment.path) { decodeThumbnail(attachment.path, 512) }
+            if (thumb != null) {
+                Image(
+                    bitmap = thumb,
+                    contentDescription = "Attached image",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(200.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                )
+            }
+        }
+        AttachmentKind.AUDIO -> {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(Icons.Rounded.MusicNote, contentDescription = null)
+                Text("Audio clip", style = MaterialTheme.typography.labelLarge)
+            }
         }
     }
 }
@@ -346,76 +392,195 @@ private fun InputBar(
     uiState: AssistantUiState,
     onMicClick: () -> Unit,
     onSendText: (String) -> Unit,
-    onCameraClick: () -> Unit
+    onCameraClick: () -> Unit,
+    onPickImage: (android.net.Uri) -> Unit,
+    onPickAudio: (android.net.Uri) -> Unit,
+    onClearAttachment: () -> Unit
 ) {
     val controlsEnabled = uiState.isModelAvailable && uiState.isPermissionGranted
     var draft by remember { mutableStateOf("") }
     val hasText = draft.isNotBlank()
+    val hasAttachment = uiState.pendingAttachment != null
+    // A turn can be sent with text, an attachment, or both.
+    val canSend = (hasText || hasAttachment) && controlsEnabled
 
     fun send() {
-        if (hasText && controlsEnabled) {
+        if (canSend) {
             onSendText(draft)
             draft = ""
         }
     }
 
+    // Permissionless system pickers: Photo Picker for images, SAF document picker for audio.
+    val imagePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri -> uri?.let(onPickImage) }
+    val audioPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let(onPickAudio) }
+
     Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
                 .imePadding()
-                .padding(8.dp),
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(8.dp)
         ) {
-            IconButton(
-                onClick = onCameraClick,
-                enabled = controlsEnabled
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.PhotoCamera,
-                    contentDescription = "Camera",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            uiState.pendingAttachment?.let { attachment ->
+                PendingAttachmentChip(attachment = attachment, onClear = onClearAttachment)
+                Spacer(Modifier.height(8.dp))
             }
 
-            OutlinedTextField(
-                value = draft,
-                onValueChange = { draft = it },
-                modifier = Modifier
-                    .weight(1f)
-                    .heightIn(min = 56.dp),
-                placeholder = { Text("Type or say something…") },
-                shape = RoundedCornerShape(28.dp),
-                singleLine = false,
-                maxLines = 4,
-                enabled = controlsEnabled,
-                keyboardOptions = KeyboardOptions(
-                    capitalization = KeyboardCapitalization.Sentences,
-                    imeAction = ImeAction.Send
-                ),
-                keyboardActions = KeyboardActions(onSend = { send() }),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedContainerColor = MaterialTheme.colorScheme.surface,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surface,
-                    disabledContainerColor = MaterialTheme.colorScheme.surface,
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
-                )
-            )
+            Row(
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                IconButton(
+                    onClick = onCameraClick,
+                    enabled = controlsEnabled
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.PhotoCamera,
+                        contentDescription = "Camera",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
 
-            // Text present → send; otherwise the mic drives the voice loop (matches the mockup).
-            if (hasText) {
-                SendButton(enabled = controlsEnabled, onClick = { send() })
-            } else {
-                MicButton(
-                    isActive = uiState.isActive,
+                AttachButton(
                     enabled = controlsEnabled,
-                    onClick = onMicClick
+                    onPickImage = {
+                        imagePicker.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                        )
+                    },
+                    onPickAudio = { audioPicker.launch(arrayOf("audio/*")) }
                 )
+
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 56.dp),
+                    placeholder = { Text("Type or say something…") },
+                    shape = RoundedCornerShape(28.dp),
+                    singleLine = false,
+                    maxLines = 4,
+                    enabled = controlsEnabled,
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.Sentences,
+                        imeAction = ImeAction.Send
+                    ),
+                    keyboardActions = KeyboardActions(onSend = { send() }),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = MaterialTheme.colorScheme.surface,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                        disabledContainerColor = MaterialTheme.colorScheme.surface,
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+                    )
+                )
+
+                // Text or attachment present → send; otherwise the mic drives the voice loop.
+                if (hasText || hasAttachment) {
+                    SendButton(enabled = canSend, onClick = { send() })
+                } else {
+                    MicButton(
+                        isActive = uiState.isActive,
+                        enabled = controlsEnabled,
+                        onClick = onMicClick
+                    )
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun AttachButton(
+    enabled: Boolean,
+    onPickImage: () -> Unit,
+    onPickAudio: () -> Unit
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { menuOpen = true }, enabled = enabled) {
+            Icon(
+                imageVector = Icons.Rounded.AttachFile,
+                contentDescription = "Attach file",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            DropdownMenuItem(
+                text = { Text("Photo") },
+                leadingIcon = { Icon(Icons.Rounded.Image, contentDescription = null) },
+                onClick = { menuOpen = false; onPickImage() }
+            )
+            DropdownMenuItem(
+                text = { Text("Audio") },
+                leadingIcon = { Icon(Icons.Rounded.MusicNote, contentDescription = null) },
+                onClick = { menuOpen = false; onPickAudio() }
+            )
+        }
+    }
+}
+
+@Composable
+private fun PendingAttachmentChip(attachment: Attachment, onClear: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 8.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            when (attachment.kind) {
+                AttachmentKind.IMAGE -> {
+                    val thumb = remember(attachment.path) { decodeThumbnail(attachment.path, 96) }
+                    if (thumb != null) {
+                        Image(
+                            bitmap = thumb,
+                            contentDescription = "Attached image",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.size(40.dp).clip(RoundedCornerShape(8.dp))
+                        )
+                    } else {
+                        Icon(Icons.Rounded.Image, contentDescription = null)
+                    }
+                    Text("Image", style = MaterialTheme.typography.labelLarge)
+                }
+                AttachmentKind.AUDIO -> {
+                    Icon(
+                        Icons.Rounded.MusicNote,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Text("Audio clip", style = MaterialTheme.typography.labelLarge)
+                }
+            }
+            IconButton(onClick = onClear) {
+                Icon(Icons.Rounded.Close, contentDescription = "Remove attachment")
+            }
+        }
+    }
+}
+
+/** Decode a downscaled bitmap from an app-private file path for in-bubble previews (off-network). */
+private fun decodeThumbnail(path: String, maxPx: Int): androidx.compose.ui.graphics.ImageBitmap? {
+    return try {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeFile(path, bounds)
+        val largest = maxOf(bounds.outWidth, bounds.outHeight).coerceAtLeast(1)
+        var sample = 1
+        while (largest / sample > maxPx) sample *= 2
+        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+        android.graphics.BitmapFactory.decodeFile(path, opts)?.asImageBitmap()
+    } catch (e: Exception) {
+        null
     }
 }
 

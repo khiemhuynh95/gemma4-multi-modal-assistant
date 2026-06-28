@@ -29,6 +29,9 @@ class VoiceAssistant(
     private val history = mutableListOf<Message>()
     @Volatile private var activeConversationId: Long = 0L
 
+    // Media staged by the user (copied to app-private storage), sent with the next turn.
+    @Volatile private var pendingAttachment: Attachment? = null
+
     // Per-turn bookkeeping so a turn is persisted once, after both generation and speech finish.
     @Volatile private var currentUserText: String? = null
     @Volatile private var currentTurnConversationId: Long = 0L
@@ -107,6 +110,35 @@ class VoiceAssistant(
 
     fun setPermissionGranted(granted: Boolean) {
         _uiState.update { it.copy(isPermissionGranted = granted) }
+    }
+
+    /**
+     * Copy a picked media [uri] into app-private storage and stage it for the next turn. The runtime
+     * reads media from a file path and the picker's read grant is transient, so we copy immediately.
+     */
+    fun attachMedia(uri: android.net.Uri, kind: AttachmentKind, extension: String) {
+        scope.launch {
+            try {
+                val path = withContext(Dispatchers.IO) { store.saveMedia(uri, extension) }
+                pendingAttachment = Attachment(path, kind)
+                _uiState.update { it.copy(pendingAttachment = pendingAttachment, error = null) }
+            } catch (e: Exception) {
+                android.util.Log.e("VoiceAssistant", "Failed to attach media", e)
+                _uiState.update { it.copy(error = "Couldn't attach that file.") }
+            }
+        }
+    }
+
+    /** Discard the staged attachment before it's sent. */
+    fun clearPendingAttachment() {
+        pendingAttachment = null
+        _uiState.update { it.copy(pendingAttachment = null) }
+    }
+
+    private fun defaultPromptFor(attachment: Attachment?): String = when (attachment?.kind) {
+        AttachmentKind.IMAGE -> "What's in this image?"
+        AttachmentKind.AUDIO -> "What's in this audio?"
+        else -> ""
     }
 
     fun updateModelAvailability() {
@@ -240,8 +272,12 @@ class VoiceAssistant(
             try {
                 engine = Engine(
                     EngineConfig(
-                        modelPath   = modelPath,
-                        backend     = Backend.GPU(),
+                        modelPath     = modelPath,
+                        backend       = Backend.GPU(),
+                        // Enable the on-demand vision + audio sub-models for media attachments.
+                        visionBackend = Backend.GPU(),
+                        audioBackend  = Backend.GPU(),
+                        maxNumImages  = 1,
                         cacheDir = context.cacheDir.path
                     )
                 )
@@ -256,8 +292,11 @@ class VoiceAssistant(
             if (!initialized) {
                 engine = Engine(
                     EngineConfig(
-                        modelPath   = modelPath,
-                        backend     = Backend.CPU(),
+                        modelPath     = modelPath,
+                        backend       = Backend.CPU(),
+                        visionBackend = Backend.CPU(),
+                        audioBackend  = Backend.CPU(),
+                        maxNumImages  = 1,
                         cacheDir = context.cacheDir.path
                     )
                 )
@@ -384,11 +423,16 @@ class VoiceAssistant(
         val turns = withContext(Dispatchers.IO) { store.loadTurns(id) }
         history.clear()
         turns.forEach { t ->
+            val attachment = t.mediaPath?.let { path ->
+                val kind = runCatching { AttachmentKind.valueOf(t.mediaKind ?: "") }.getOrNull()
+                kind?.let { Attachment(path, it) }
+            }
             history.add(
                 Message(
                     id = t.id,
                     role = if (t.role == "user") Role.USER else Role.ASSISTANT,
-                    text = t.text
+                    text = t.text,
+                    attachment = attachment
                 )
             )
         }
@@ -480,18 +524,22 @@ class VoiceAssistant(
      */
     fun submitText(text: String) {
         val trimmed = text.trim()
-        if (trimmed.isEmpty()) return
+        val attachment = pendingAttachment
+        // A turn needs either text or an attachment (an attachment alone uses a default prompt).
+        if (trimmed.isEmpty() && attachment == null) return
         if (!isInitialized) {
             _uiState.update { it.copy(error = "The assistant is still starting up. One moment…") }
             return
         }
         if (currentUserText != null || isSpeaking()) return
-        beginTurn(trimmed)
+        beginTurn(trimmed, attachment)
     }
 
     /** Persist the user message, show a thinking placeholder, and kick off inference. */
-    private fun beginTurn(userText: String) {
-        currentUserText = userText
+    private fun beginTurn(userText: String, attachment: Attachment? = null) {
+        // The model always gets a non-blank instruction; the displayed bubble may be image-only.
+        val prompt = userText.ifBlank { defaultPromptFor(attachment) }
+        currentUserText = prompt
         currentTurnConversationId = activeConversationId
         currentAssistantFull.setLength(0)
         generationComplete = false
@@ -499,27 +547,30 @@ class VoiceAssistant(
         // First user message in a chat names it.
         val isFirstUserMessage = history.none { it.role == Role.USER }
 
-        appendMessage(Role.USER, userText)
+        appendMessage(Role.USER, userText, attachment)
+        pendingAttachment = null
         // "…" is the thinking placeholder; the lockstep reveal overwrites it once speech starts.
-        _uiState.update { it.copy(lastUserUtterance = userText, assistantResponse = "…", error = null) }
-
-        if (isFirstUserMessage) {
-            maybeTitleConversation(currentTurnConversationId, userText)
+        _uiState.update {
+            it.copy(lastUserUtterance = userText, assistantResponse = "…", error = null, pendingAttachment = null)
         }
 
-        handleTurn(userText)
+        if (isFirstUserMessage) {
+            maybeTitleConversation(currentTurnConversationId, prompt)
+        }
+
+        handleTurn(prompt, attachment)
     }
 
     /** Append to the in-memory thread (synchronous, drives the UI) and persist durably. */
-    private fun appendMessage(role: Role, text: String) {
-        val message = Message(id = System.nanoTime(), role = role, text = text)
+    private fun appendMessage(role: Role, text: String, attachment: Attachment? = null) {
+        val message = Message(id = System.nanoTime(), role = role, text = text, attachment = attachment)
         history.add(message)
         _uiState.update { it.copy(messages = history.toList()) }
         val roleTag = if (role == Role.USER) "user" else "assistant"
         val conversationId = currentTurnConversationId
         scope.launch(Dispatchers.IO) {
             try {
-                store.append(conversationId, roleTag, text)
+                store.append(conversationId, roleTag, text, attachment?.path, attachment?.kind?.name)
             } catch (e: Exception) {
                 android.util.Log.e("VoiceAssistant", "Failed to persist $roleTag message", e)
             }
@@ -578,7 +629,7 @@ class VoiceAssistant(
         }
     }
 
-    private fun handleTurn(userText: String) {
+    private fun handleTurn(userText: String, attachment: Attachment? = null) {
         val convo = conversation ?: return
         engineProcessing.set(true)
 
@@ -590,7 +641,18 @@ class VoiceAssistant(
             val sentenceBuffer = StringBuilder()
             var firstAudioEmitted = false
             try {
-                convo.sendMessageAsync(userText)
+                // Media before text (model-card requirement); the vision/audio sub-model maps in on
+                // first use. Plain text turns keep the lighter String overload.
+                val responseStream = if (attachment != null) {
+                    val media: Content = when (attachment.kind) {
+                        AttachmentKind.IMAGE -> Content.ImageFile(attachment.path)
+                        AttachmentKind.AUDIO -> Content.AudioFile(attachment.path)
+                    }
+                    convo.sendMessageAsync(Contents.of(media, Content.Text(userText)))
+                } else {
+                    convo.sendMessageAsync(userText)
+                }
+                responseStream
                     .collect { chunk ->
                         val piece = chunk.toString()
                         sentenceBuffer.append(piece)

@@ -1,6 +1,7 @@
 package com.example.voiceassistant.data
 
 import android.content.Context
+import android.net.Uri
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -17,8 +18,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * Local-first persistence of conversations (Phase 1 = text turns only).
  *
  * Per `architecture.md` §5: the verbatim thread is stored on-device and never leaves it. Each
- * conversation owns an ordered list of turns. Captured images, the running summary, and windowed
- * prompt assembly are deferred to M5.
+ * conversation owns an ordered list of turns. A turn may reference one media attachment (image or
+ * audio) by app-private file path — never the bytes. The running summary and windowed prompt
+ * assembly are deferred to M5.
  */
 @Entity(tableName = "conversations")
 data class ConversationEntity(
@@ -34,6 +36,8 @@ data class TurnEntity(
     val conversationId: Long,
     val role: String,          // "user" | "assistant"
     val text: String,
+    val mediaPath: String? = null,   // app-private file path of an attachment, if any
+    val mediaKind: String? = null,   // "IMAGE" | "AUDIO"
     val createdAt: Long = System.currentTimeMillis(),
 )
 
@@ -67,7 +71,7 @@ interface TurnDao {
     suspend fun deleteForConversation(conversationId: Long)
 }
 
-@Database(entities = [ConversationEntity::class, TurnEntity::class], version = 2, exportSchema = false)
+@Database(entities = [ConversationEntity::class, TurnEntity::class], version = 3, exportSchema = false)
 abstract class ConversationDatabase : RoomDatabase() {
     abstract fun conversationDao(): ConversationDao
     abstract fun turnDao(): TurnDao
@@ -91,13 +95,22 @@ val MIGRATION_1_2 = object : Migration(1, 2) {
     }
 }
 
+/** v2 → v3: turns can reference a single image/audio attachment by app-private file path. */
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE turns ADD COLUMN mediaPath TEXT")
+        db.execSQL("ALTER TABLE turns ADD COLUMN mediaKind TEXT")
+    }
+}
+
 class ConversationStore(context: Context) {
+    private val appContext = context.applicationContext
     private val db = Room.databaseBuilder(
-        context.applicationContext,
+        appContext,
         ConversationDatabase::class.java,
         "conversation.db"
     )
-        .addMigrations(MIGRATION_1_2)
+        .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
         .fallbackToDestructiveMigration()
         .build()
 
@@ -123,10 +136,40 @@ class ConversationStore(context: Context) {
     suspend fun loadTurns(conversationId: Long): List<TurnEntity> =
         turnDao.getForConversation(conversationId)
 
-    suspend fun append(conversationId: Long, role: String, text: String): Long {
-        val rowId = turnDao.insert(TurnEntity(conversationId = conversationId, role = role, text = text))
+    suspend fun append(
+        conversationId: Long,
+        role: String,
+        text: String,
+        mediaPath: String? = null,
+        mediaKind: String? = null,
+    ): Long {
+        val rowId = turnDao.insert(
+            TurnEntity(
+                conversationId = conversationId,
+                role = role,
+                text = text,
+                mediaPath = mediaPath,
+                mediaKind = mediaKind,
+            )
+        )
         conversationDao.touch(conversationId, System.currentTimeMillis())
         return rowId
+    }
+
+    /**
+     * Copy a picked `content://` [uri] into app-private storage and return the absolute file path.
+     * The runtime reads media from a real file path (`Content.ImageFile` / `Content.AudioFile`), and
+     * a picked Uri's read grant is transient — so we copy now and reference the durable copy forever.
+     * Must be called off the main thread.
+     */
+    fun saveMedia(uri: Uri, extension: String): String {
+        val mediaDir = java.io.File(appContext.filesDir, "media").apply { mkdirs() }
+        val ext = extension.ifBlank { "bin" }
+        val outFile = java.io.File(mediaDir, "${java.util.UUID.randomUUID()}.$ext")
+        appContext.contentResolver.openInputStream(uri)?.use { input ->
+            java.io.FileOutputStream(outFile).use { output -> input.copyTo(output) }
+        } ?: throw java.io.IOException("Unable to open media stream for $uri")
+        return outFile.absolutePath
     }
 
     fun close() = db.close()

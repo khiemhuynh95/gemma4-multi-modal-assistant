@@ -2,11 +2,25 @@ package com.example.voiceassistant
 
 enum class Role { USER, ASSISTANT }
 
+/** The media kinds the on-device runtime accepts (LiteRT-LM has no video Content type). */
+enum class AttachmentKind { IMAGE, AUDIO }
+
+/**
+ * A media file attached to a user turn. [path] is an app-private file (never a `content://` Uri and
+ * never bytes in the DB — see `architecture.md` §5) that the runtime reads via
+ * `Content.ImageFile` / `Content.AudioFile`.
+ */
+data class Attachment(
+    val path: String,
+    val kind: AttachmentKind,
+)
+
 /** One finalized, persisted turn shown in the conversation thread. */
 data class Message(
     val id: Long = 0,
     val role: Role,
     val text: String,
+    val attachment: Attachment? = null,
 )
 
 /** A conversation entry for the navigation drawer. */
@@ -21,6 +35,8 @@ data class AssistantUiState(
     val activeConversationId: Long = 0L,
     // Finalized history of the active conversation (restored from ConversationStore on launch).
     val messages: List<Message> = emptyList(),
+    // Media selected by the user, copied to app-private storage, awaiting send with the next turn.
+    val pendingAttachment: Attachment? = null,
     val lastUserUtterance: String = "",
     val assistantResponse: String = "",
     val isSpeaking: Boolean = false,
