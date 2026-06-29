@@ -4,7 +4,7 @@ Phase 1 — on-device multimodal showcase. Keep this current: tick items as done
 
 Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 
-Current status: **M0 done; M1 UI shell in place; image/audio file attachments shipped (Photo Picker + audio document picker → on-device multimodal turn, persisted). Camera (M2) still pending; video unsupported by the runtime.**
+Current status: **M0 done; M1 UI shell in place; image/audio file attachments shipped (Photo Picker + audio document picker → on-device multimodal turn, persisted); agent tool-calling shipped (M8 — device/info/network skills via LiteRT-LM native tools). Camera (M2) still pending; video unsupported by the runtime.**
 
 ## M0 — Theme & project setup
 - [x] Compose Material 3 theme from `DESIGN.md`: `ColorScheme` (light + dark), `Typography`, `Shapes` (28 / 20 / pill) in `ui/theme/`. `DESIGN.md` authored from the mockup tokens.
@@ -69,9 +69,23 @@ Turns are finalized once **both** generation and speech have drained (`maybeFina
 ## M7 — Demo validation
 - [ ] Airplane-mode end-to-end: camera "what is this / read this" → spoken + captioned answer.
 - [ ] Airplane-mode voice + text Q&A.
-- [ ] Confirm nothing touches the network (no cloud calls anywhere).
+- [ ] Confirm nothing touches the network **except** the explicit, user-invoked network skills (web search, weather).
 
 Acceptance: the Definition of Done in `CLAUDE.md` passes on a real device.
+
+## M8 — Agent tool-calling (assistant agent)
+Pulled forward from Phase 3+. LiteRT-LM native tool-calling (`ConversationConfig(tools, automaticToolCalling=true)`); see `architecture.md` §5b. Started with the current Gemma 4 E2B (no new model).
+- [x] `tools/AssistantTools.kt`: `DeviceActionsTools` (timer, alarm, flashlight, media volume, calendar), `SystemTools` (open app, dial, SMS, Wi-Fi/Bluetooth/DND settings), `InfoTools` (date/time, battery, connectivity), `NetworkTools` (web search, weather; fail-soft when offline).
+- [x] Register tools in `VoiceAssistant.conversationConfig()`; system prompt enables tool use; `OnToolUsed` → `AssistantUiState.activeTool` → status chip in `AssistantScreen`.
+- [x] Permissions: `com.android.alarm.permission.SET_ALARM`, `ACCESS_NETWORK_STATE`; `<queries>` for SET_TIMER/SET_ALARM/INSERT(event)/MAIN+LAUNCHER/DIAL/SENDTO (Android 11+ package visibility).
+- [x] **Skills management screen** (`SkillsScreen.kt`): create/edit/delete custom **markdown instruction skills** (injected into the system prompt), persisted in Room (`instruction_skills`); built-in tools listed read-only. Changes reset the session live.
+- [x] **MCP servers** (`tools/McpClient.kt`, `mcp_servers` table, DB v6): configure remote servers (HTTP/Streamable-HTTP), discover tools via JSON-RPC, register enabled servers' tools with the model. Managed on the Skills screen; quick on/off via the chat `tune` panel (`ActiveToolsSheet`).
+- [x] Fixed the "set a timer" failure: package-visibility `<queries>` + the correct alarm permission string.
+- [ ] On-device verification of the new SystemTools (open app / call / SMS / settings panels), instruction skills, and an MCP server end-to-end.
+- [ ] Tune tool descriptions / system prompt for E2B call accuracy; consider FunctionGemma if needed.
+- [ ] Optional: persist per-turn tool calls for the saved transcript.
+
+Acceptance: "set a 2-minute timer", "turn on the flashlight", "what's my battery", "add an event…" act on-device offline; "search the web for…" / "weather in…" work online and degrade gracefully offline.
 
 ## Notes / open questions
 - LiteRT-LM image-input + session API: ✅ confirmed (0.13.1 — Text/Image/Audio `Content`, no video; `sendMessageAsync(Contents): Flow`).

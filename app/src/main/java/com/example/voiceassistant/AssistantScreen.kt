@@ -24,6 +24,7 @@ import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Lock
@@ -34,6 +35,7 @@ import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -60,6 +62,20 @@ fun AssistantScreen(viewModel: AssistantViewModel) {
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     var showSettings by remember { mutableStateOf(false) }
+    var showSkills by remember { mutableStateOf(false) }
+    var showActivePanel by remember { mutableStateOf(false) }
+
+    if (showSkills) {
+        SkillsScreen(
+            uiState = uiState,
+            onBack = { showSkills = false },
+            onSave = { viewModel.saveInstructionSkill(it) },
+            onDelete = { viewModel.deleteInstructionSkill(it) },
+            onSaveMcp = { viewModel.saveMcpServer(it) },
+            onDeleteMcp = { viewModel.deleteMcpServer(it) },
+        )
+        return
+    }
 
     // Surface transient errors as a snackbar rather than a persistent card (see ui-context.md).
     LaunchedEffect(uiState.error) {
@@ -90,6 +106,8 @@ fun AssistantScreen(viewModel: AssistantViewModel) {
         topBar = {
             AssistantTopBar(
                 onOpenDrawer = { scope.launch { drawerState.open() } },
+                onOpenActivePanel = { showActivePanel = true },
+                onOpenSkills = { showSkills = true },
                 onOpenSettings = { showSettings = true }
             )
         },
@@ -145,6 +163,68 @@ fun AssistantScreen(viewModel: AssistantViewModel) {
             viewModel = viewModel,
             onDismiss = { showSettings = false }
         )
+    }
+
+    if (showActivePanel) {
+        ActiveToolsSheet(
+            uiState = uiState,
+            onToggleSkill = { id, on -> viewModel.setInstructionSkillEnabled(id, on) },
+            onToggleMcp = { id, on -> viewModel.setMcpServerEnabled(id, on) },
+            onDismiss = { showActivePanel = false }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ActiveToolsSheet(
+    uiState: AssistantUiState,
+    onToggleSkill: (Long, Boolean) -> Unit,
+    onToggleMcp: (Long, Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = MaterialTheme.colorScheme.surfaceContainerHigh) {
+        Column(modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = 32.dp)) {
+            Text("Active skills & servers", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Turn your instruction skills and MCP servers on or off for this assistant.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(16.dp))
+
+            Text("Instruction skills", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            if (uiState.instructionSkills.isEmpty()) {
+                Text("None yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            uiState.instructionSkills.forEach { skill ->
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
+                    Text(skill.name, modifier = Modifier.weight(1f))
+                    Switch(checked = skill.enabled, onCheckedChange = { onToggleSkill(skill.id, it) })
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+            Text("MCP servers", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            if (uiState.mcpServers.isEmpty()) {
+                Text("None configured.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            uiState.mcpServers.forEach { info ->
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(info.server.name)
+                        val sub = when {
+                            !info.server.enabled -> "Off"
+                            info.error != null -> "Error"
+                            else -> "${info.toolCount} tools"
+                        }
+                        Text(sub, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(checked = info.server.enabled, onCheckedChange = { onToggleMcp(info.server.id, it) })
+                }
+            }
+        }
     }
 }
 
@@ -203,7 +283,7 @@ private fun ConversationDrawer(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AssistantTopBar(onOpenDrawer: () -> Unit, onOpenSettings: () -> Unit) {
+private fun AssistantTopBar(onOpenDrawer: () -> Unit, onOpenActivePanel: () -> Unit, onOpenSkills: () -> Unit, onOpenSettings: () -> Unit) {
     TopAppBar(
         colors = TopAppBarDefaults.topAppBarColors(
             containerColor = MaterialTheme.colorScheme.surface,
@@ -242,6 +322,20 @@ private fun AssistantTopBar(onOpenDrawer: () -> Unit, onOpenSettings: () -> Unit
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(end = 4.dp)
             )
+            IconButton(onClick = onOpenActivePanel) {
+                Icon(
+                    imageVector = Icons.Rounded.Tune,
+                    contentDescription = "Active skills & servers",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            IconButton(onClick = onOpenSkills) {
+                Icon(
+                    imageVector = Icons.Rounded.Extension,
+                    contentDescription = "Skills",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             IconButton(onClick = onOpenSettings) {
                 Icon(
                     imageVector = Icons.Rounded.Settings,
@@ -286,7 +380,10 @@ private fun MessageThread(
         uiState.messages.forEach { message ->
             when (message.role) {
                 Role.USER -> UserBubble(text = message.text, attachment = message.attachment)
-                Role.ASSISTANT -> AssistantBubble(text = message.text)
+                Role.ASSISTANT -> {
+                    AssistantBubble(text = message.text)
+                    message.metrics?.let { TurnMetricsRow(it) }
+                }
             }
         }
 
@@ -298,8 +395,56 @@ private fun MessageThread(
             )
         }
 
+        // Informational chip while the model invokes an on-device skill (tool-calling).
+        uiState.activeTool?.let { ToolStatusChip(it) }
+
         // Leave room so the last bubble clears the input bar / listening sheet.
         Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun TurnMetricsRow(m: TurnMetrics) {
+    val total = m.promptTokens + m.outputTokens
+    val stats = buildList {
+        if (m.latencyMs > 0) add("⏱ ${"%.1f".format(m.latencyMs / 1000.0)}s")
+        if (m.ttftSec > 0) add("first ${"%.1f".format(m.ttftSec)}s")
+        if (total > 0) add("🔢 $total tok (${m.promptTokens}+${m.outputTokens})")
+        if (m.decodeTokensPerSec > 0) add("⚡ ${"%.0f".format(m.decodeTokensPerSec)} tok/s")
+    }
+    Column(modifier = Modifier.padding(start = 10.dp, top = 2.dp, bottom = 6.dp)) {
+        if (m.toolsInvoked.isNotEmpty()) {
+            Text(
+                "🔧 " + m.toolsInvoked.joinToString(", "),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (stats.isNotEmpty()) {
+            Text(
+                stats.joinToString("  ·  "),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ToolStatusChip(tool: String) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+        Surface(
+            color = MaterialTheme.colorScheme.tertiaryContainer,
+            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+            shape = RoundedCornerShape(50),
+            tonalElevation = 1.dp,
+        ) {
+            Text(
+                text = "⚙  $tool",
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+            )
+        }
     }
 }
 

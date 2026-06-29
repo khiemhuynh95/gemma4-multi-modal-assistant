@@ -1,6 +1,16 @@
 package com.example.voiceassistant
 
 import com.example.voiceassistant.data.ConversationStore
+import com.example.voiceassistant.tools.DeviceActionsTools
+import com.example.voiceassistant.tools.InfoTools
+import com.example.voiceassistant.tools.InstructionSkill
+import com.example.voiceassistant.tools.McpConnection
+import com.example.voiceassistant.tools.McpServer
+import com.example.voiceassistant.tools.McpServerInfo
+import com.example.voiceassistant.tools.McpServerTool
+import com.example.voiceassistant.tools.NetworkTools
+import com.example.voiceassistant.tools.SkillTools
+import com.example.voiceassistant.tools.SystemTools
 import com.google.ai.edge.litertlm.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -29,6 +39,24 @@ class VoiceAssistant(
     private val history = mutableListOf<Message>()
     @Volatile private var activeConversationId: Long = 0L
 
+    // On-device "skills" the model can call (LiteRT-LM native tool-calling). Each tool reports what
+    // it did via reportToolUsed so the UI can show a status chip. See tools/AssistantTools.kt.
+    private val deviceTools = DeviceActionsTools(context, ::reportToolUsed)
+    private val infoTools = InfoTools(context, ::reportToolUsed)
+    private val networkTools = NetworkTools(::reportToolUsed)
+    private val systemTools = SystemTools(context, ::reportToolUsed)
+    // get_skill: loads an instruction skill's full body on demand (reads the current enabled set).
+    private val skillTools = SkillTools({ instructionSkills.filter { it.enabled } }, ::reportToolUsed)
+
+    // User-defined markdown "instruction" skills (CRUD from the Skills screen). Enabled ones are
+    // injected into the system prompt in conversationConfig(); re-applied to the live session on change.
+    @Volatile private var instructionSkills: List<InstructionSkill> = emptyList()
+
+    // Remote MCP servers + the tool providers discovered from the enabled ones (registered with the
+    // model in conversationConfig). Refreshed (network) on launch and whenever a server changes.
+    @Volatile private var mcpServers: List<McpServer> = emptyList()
+    @Volatile private var mcpToolProviders: List<ToolProvider> = emptyList()
+
     // Media staged by the user (copied to app-private storage), sent with the next turn.
     @Volatile private var pendingAttachment: Attachment? = null
 
@@ -37,6 +65,10 @@ class VoiceAssistant(
     @Volatile private var currentTurnConversationId: Long = 0L
     private val currentAssistantFull = StringBuilder()
     @Volatile private var generationComplete = false
+
+    // Per-turn observability: tools invoked this turn + the metrics shown under the reply.
+    private val turnTools = java.util.Collections.synchronizedList(mutableListOf<String>())
+    @Volatile private var currentTurnMetrics: TurnMetrics? = null
 
     // Maps an in-flight utterance id to its sentence text so the on-screen transcript
     // can be revealed in lockstep with the voice (instead of dumping the full LLM output).
@@ -104,6 +136,24 @@ class VoiceAssistant(
                 activateConversation(convos.first().id)
             } catch (e: Exception) {
                 android.util.Log.e("VoiceAssistant", "Failed to load conversations", e)
+            }
+        }
+
+        // Load user-defined skills so the Skills screen is populated even before the model loads.
+        scope.launch {
+            try {
+                loadInstructionSkills()
+            } catch (e: Exception) {
+                android.util.Log.e("VoiceAssistant", "Failed to load instruction skills", e)
+            }
+        }
+
+        // Discover MCP servers + tools (network); the session picks them up once the engine is ready.
+        scope.launch {
+            try {
+                refreshMcp()
+            } catch (e: Exception) {
+                android.util.Log.e("VoiceAssistant", "Failed to refresh MCP servers", e)
             }
         }
     }
@@ -192,7 +242,16 @@ class VoiceAssistant(
      */
     fun refreshTtsEngine() {
         if (kokoro != null) return
-        if (!java.io.File(kokoroDir, "model.onnx").exists()) return
+        // Only construct sherpa-onnx when the model is COMPLETE — a partial download makes the
+        // native OfflineTts constructor return an invalid handle that SIGSEGVs on first use
+        // (uncatchable from Kotlin). An incomplete install falls back to system TTS.
+        if (!KokoroTts.isModelComplete(kokoroDir)) {
+            if (java.io.File(kokoroDir, "model.onnx").exists()) {
+                android.util.Log.w("VoiceAssistant", "Kokoro model is incomplete; using system TTS. Re-download the voice.")
+            }
+            _uiState.update { it.copy(isKokoroAvailable = false, ttsEngine = "System") }
+            return
+        }
         try {
             val k = KokoroTts(kokoroDir)
             k.setSpeed(_uiState.value.kokoroSpeed)
@@ -226,9 +285,13 @@ class VoiceAssistant(
 
     private fun isSpeaking(): Boolean = engineProcessing.get() || pendingUtterances.get() > 0
 
+    @OptIn(ExperimentalApi::class)
     suspend fun initialize() = withContext(Dispatchers.Default) {
         if (isInitialized) return@withContext
-        
+        // Record per-turn benchmark info (tokens, time-to-first-token, tok/s) for the metrics row.
+        // Without this flag getBenchmarkInfo() returns zeros.
+        ExperimentalFlags.enableBenchmark = true
+
         // Prefer the offline Kokoro neural voice when its model is present.
         refreshTtsEngine()
 
@@ -268,22 +331,23 @@ class VoiceAssistant(
             Engine.setNativeMinLogSeverity(LogSeverity.ERROR)
             var initialized = false
             
-            // Try GPU backend first
+            // Try GPU for the LLM + vision (much faster prefill/decode), but keep AUDIO on CPU —
+            // the audio sub-model only supports CPU, and requesting GPU for it makes the WHOLE engine
+            // creation fail (which previously forced an all-CPU fallback and slow time-to-first-token).
             try {
                 engine = Engine(
                     EngineConfig(
                         modelPath     = modelPath,
                         backend       = Backend.GPU(),
-                        // Enable the on-demand vision + audio sub-models for media attachments.
                         visionBackend = Backend.GPU(),
-                        audioBackend  = Backend.GPU(),
+                        audioBackend  = Backend.CPU(),
                         maxNumImages  = 1,
                         cacheDir = context.cacheDir.path
                     )
                 )
                 engine.initialize()
                 initialized = true
-                android.util.Log.i("VoiceAssistant", "Gemma engine initialized successfully with GPU backend")
+                android.util.Log.i("VoiceAssistant", "Gemma engine initialized successfully with GPU backend (audio on CPU)")
             } catch (e: Exception) {
                 android.util.Log.w("VoiceAssistant", "Failed to initialize with GPU backend, falling back to CPU", e)
             }
@@ -309,7 +373,25 @@ class VoiceAssistant(
             _uiState.update { it.copy(assistantResponse = "Ready! Tap Start.") }
         } catch (e: Exception) {
             android.util.Log.e("VoiceAssistant", "Initialization failed", e)
-            _uiState.update { it.copy(error = "Engine Init Failed: ${e.message}") }
+            val msg = e.message ?: ""
+            // A structurally invalid model — almost always a truncated/corrupt download (the runtime
+            // reports a missing signature like "TF_LITE_PREFILL_DECODE not found in the model").
+            // Remove it so the download card reappears for a clean re-download, and never leave the
+            // stale "Initializing…" text on screen.
+            val corruptModel = msg.contains("not found in the model", ignoreCase = true) ||
+                msg.contains("TF_LITE_PREFILL_DECODE", ignoreCase = true)
+            if (corruptModel) {
+                runCatching { java.io.File(modelPath).delete() }
+                _uiState.update {
+                    it.copy(
+                        assistantResponse = "",
+                        isModelAvailable = false,
+                        error = "The model download was incomplete. Please download it again.",
+                    )
+                }
+            } else {
+                _uiState.update { it.copy(assistantResponse = "", error = "Engine init failed: ${e.message}") }
+            }
         }
     }
 
@@ -391,6 +473,18 @@ class VoiceAssistant(
         result
     }
 
+    /**
+     * Lightweight catalog of enabled skills for the system prompt: only name + short description (to
+     * keep the prompt small). The model loads a skill's full body on demand via the `get_skill` tool.
+     */
+    private fun instructionSkillsBlock(): String {
+        val enabled = instructionSkills.filter { it.enabled }
+        if (enabled.isEmpty()) return ""
+        return "\n\nYou have these custom skills available. When the user's request matches one, FIRST " +
+            "call get_skill with its exact name to load the full instructions, then follow them:\n" +
+            enabled.joinToString("\n") { "- ${it.name}: ${it.description.ifBlank { "(no description)" }}" }
+    }
+
     private fun conversationConfig() = ConversationConfig(
         systemInstruction = Contents.of(
             "You are Alex, a warm, helpful, calm, and reassuring voice assistant. " +
@@ -401,10 +495,114 @@ class VoiceAssistant(
             "Write out all numbers, dates, times, and abbreviations fully as they sound (e.g. 'one hundred' instead of '100', 'June seventeenth' instead of 'June 17', 'three thirty p m' instead of '3:30 PM', 'doctor' instead of 'Dr.'). " +
             "Include short thinking pauses or filler words (like 'uh', 'well', 'um', 'let's see') naturally, but very sparingly (no more than once per response). " +
             "Vary your opening acknowledgements (avoid starting with 'Sure', 'Okay', or 'Got it' repeatedly). " +
-            "End turns with a simple, natural follow-up question."
+            "End turns with a simple, natural follow-up question. " +
+            "You can use tools to take actions on the device (timers, alarms, flashlight, volume, " +
+            "calendar, open apps, phone calls, texts, Wi-Fi, Bluetooth, Do Not Disturb) or to look " +
+            "things up (date and time, battery, connectivity, web search, weather). Use a tool when " +
+            "the user asks for something actionable; otherwise just answer." +
+            instructionSkillsBlock()
         ),
+        tools = listOf(tool(deviceTools), tool(infoTools), tool(networkTools), tool(systemTools), tool(skillTools)) + mcpToolProviders,
+        automaticToolCalling = true,
         samplerConfig = SamplerConfig(topK = 40, topP = 0.95, temperature = 0.8),
     )
+
+    /** Called by a tool when it runs: drives the live status chip and records it for the turn metrics. */
+    private fun reportToolUsed(chip: String, summary: String) {
+        android.util.Log.i("VoiceAssistant", "Tool used: $chip — $summary")
+        synchronized(turnTools) { if (!turnTools.contains(chip)) turnTools.add(chip) }
+        _uiState.update { it.copy(activeTool = chip) }
+    }
+
+    /** Load instruction skills from storage into memory + UI state (does not rebuild the session). */
+    private suspend fun loadInstructionSkills() {
+        val skills = withContext(Dispatchers.IO) { store.loadInstructionSkills().map { InstructionSkill.fromEntity(it) } }
+        instructionSkills = skills
+        _uiState.update { it.copy(instructionSkills = skills) }
+    }
+
+    /** Persist a new/edited instruction skill, then re-apply it to the live model session. */
+    fun saveInstructionSkill(skill: InstructionSkill) {
+        scope.launch {
+            withContext(Dispatchers.IO) { store.upsertInstructionSkill(skill.toEntity()) }
+            loadInstructionSkills()
+            resetModelSession()
+        }
+    }
+
+    /** Delete an instruction skill, then re-apply to the live model session. */
+    fun deleteInstructionSkill(id: Long) {
+        scope.launch {
+            withContext(Dispatchers.IO) { store.deleteInstructionSkill(id) }
+            loadInstructionSkills()
+            resetModelSession()
+        }
+    }
+
+    /** Toggle an instruction skill on/off (quick action from the chat panel). */
+    fun setInstructionSkillEnabled(id: Long, enabled: Boolean) {
+        val skill = instructionSkills.firstOrNull { it.id == id } ?: return
+        saveInstructionSkill(skill.copy(enabled = enabled))
+    }
+
+    /**
+     * Connect to each enabled MCP server, discover its tools, and rebuild the registered providers.
+     * Network + fail-soft: an unreachable server is recorded with an error and skipped. Updates UI
+     * state with per-server status. Does NOT itself reset the session — callers do when needed.
+     */
+    private suspend fun refreshMcp() {
+        val servers = withContext(Dispatchers.IO) { store.loadMcpServers().map { McpServer.fromEntity(it) } }
+        mcpServers = servers
+        val providers = mutableListOf<ToolProvider>()
+        val infos = withContext(Dispatchers.IO) {
+            servers.map { server ->
+                if (!server.enabled) return@map McpServerInfo(server, toolCount = 0)
+                try {
+                    val conn = McpConnection(server)
+                    conn.initialize()
+                    val tools = conn.listTools()
+                    tools.forEach { providers.add(tool(McpServerTool(server, it, ::reportToolUsed))) }
+                    android.util.Log.i("VoiceAssistant", "MCP '${server.name}': ${tools.size} tools")
+                    McpServerInfo(server, toolCount = tools.size)
+                } catch (e: Exception) {
+                    android.util.Log.w("VoiceAssistant", "MCP '${server.name}' discovery failed", e)
+                    McpServerInfo(server, error = e.message ?: "Couldn't connect")
+                }
+            }
+        }
+        mcpToolProviders = providers
+        _uiState.update { it.copy(mcpServers = infos) }
+    }
+
+    /** Reload MCP servers + their tools, then re-apply to the live session. */
+    fun refreshMcpServers() {
+        scope.launch {
+            refreshMcp()
+            resetModelSession()
+        }
+    }
+
+    fun saveMcpServer(server: McpServer) {
+        scope.launch {
+            withContext(Dispatchers.IO) { store.upsertMcpServer(server.toEntity()) }
+            refreshMcp()
+            resetModelSession()
+        }
+    }
+
+    fun deleteMcpServer(id: Long) {
+        scope.launch {
+            withContext(Dispatchers.IO) { store.deleteMcpServer(id) }
+            refreshMcp()
+            resetModelSession()
+        }
+    }
+
+    /** Toggle a server on/off (quick action from the chat panel). */
+    fun setMcpServerEnabled(id: Long, enabled: Boolean) {
+        val server = mcpServers.firstOrNull { it.id == id } ?: return
+        saveMcpServer(server.copy(enabled = enabled))
+    }
 
     /** Recreate the model session so context doesn't bleed across conversations. */
     private fun resetModelSession() {
@@ -591,7 +789,7 @@ class VoiceAssistant(
         val full = currentAssistantFull.toString().trim()
         val conversationId = currentTurnConversationId
         if (full.isNotEmpty()) {
-            val message = Message(id = System.nanoTime(), role = Role.ASSISTANT, text = full)
+            val message = Message(id = System.nanoTime(), role = Role.ASSISTANT, text = full, metrics = currentTurnMetrics)
             history.add(message)
             scope.launch(Dispatchers.IO) {
                 try {
@@ -602,7 +800,7 @@ class VoiceAssistant(
             }
         }
         _uiState.update {
-            it.copy(messages = history.toList(), assistantResponse = "", isSpeaking = false)
+            it.copy(messages = history.toList(), assistantResponse = "", isSpeaking = false, activeTool = null)
         }
         // Bubble the just-updated conversation to the top of the drawer.
         refreshConversations()
@@ -631,7 +829,10 @@ class VoiceAssistant(
 
     private fun handleTurn(userText: String, attachment: Attachment? = null) {
         val convo = conversation ?: return
+        android.util.Log.i("VoiceAssistant", "handleTurn user='$userText' (${instructionSkills.count { it.enabled }} instruction skills enabled)")
         engineProcessing.set(true)
+        turnTools.clear()
+        val turnStartMs = System.currentTimeMillis()
 
         // Reset the synced transcript for this turn; text is revealed as it's spoken.
         synchronized(spokenDisplay) { spokenDisplay.setLength(0) }
@@ -666,6 +867,19 @@ class VoiceAssistant(
             } catch (e: Exception) {
                 android.util.Log.e("VoiceAssistant", "Error in turn handling", e)
             } finally {
+                android.util.Log.i("VoiceAssistant", "Turn complete. response='${currentAssistantFull}'")
+                // Capture per-turn observability: tools invoked + LiteRT benchmark (tokens, ttft, tok/s).
+                @OptIn(ExperimentalApi::class)
+                val bench = try { convo.getBenchmarkInfo() } catch (e: Exception) { null }
+                currentTurnMetrics = TurnMetrics(
+                    toolsInvoked = synchronized(turnTools) { turnTools.toList() },
+                    latencyMs = System.currentTimeMillis() - turnStartMs,
+                    ttftSec = bench?.timeToFirstTokenInSecond ?: 0.0,
+                    promptTokens = bench?.lastPrefillTokenCount ?: 0,
+                    outputTokens = bench?.lastDecodeTokenCount ?: 0,
+                    decodeTokensPerSec = bench?.lastDecodeTokensPerSecond ?: 0.0,
+                )
+                android.util.Log.i("VoiceAssistant", "Turn metrics: $currentTurnMetrics")
                 engineProcessing.set(false)
                 // Generation done; finalize now if speech has already drained (e.g. empty reply),
                 // otherwise the last utterance's onDone will trigger it.
