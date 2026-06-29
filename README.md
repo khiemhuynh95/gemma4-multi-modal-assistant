@@ -81,6 +81,47 @@ exactly the latency that native audio-token streaming is designed to cut.
 
 ---
 
+## Architecture at a glance
+
+```mermaid
+flowchart TD
+    subgraph UI["UI — Jetpack Compose"]
+        AS["AssistantScreen<br/>thread · input · tool chip · metrics"]
+        SK["SkillsScreen + tune panel"]
+    end
+    VM["AssistantViewModel<br/>uiState: StateFlow"]
+    subgraph ORCH["VoiceAssistant — orchestrator"]
+        STT["SpeechRecognizer (live mic)"]
+        TURN["handleTurn<br/>stream → sentences → TTS + metrics"]
+        TTS["Kokoro / system TTS"]
+    end
+    subgraph ENGINE["LiteRT-LM"]
+        CONV["Conversation<br/>automaticToolCalling"]
+        ENG["Engine — LLM+vision GPU, audio CPU"]
+    end
+    subgraph TOOLS["Tools (function-calling)"]
+        BIT["Built-in: Device · Info · Network · System"]
+        STOOL["get_skill (instruction skills)"]
+        MTOOL["MCP tools → remote servers"]
+    end
+    DB[("Room: conversations · turns<br/>instruction_skills · mcp_servers")]
+
+    AS <--> VM
+    SK <--> VM
+    VM <--> TURN
+    STT --> TURN
+    TURN <-->|token stream| CONV
+    CONV --> ENG
+    CONV -->|tool call| BIT
+    CONV -->|tool call| STOOL
+    CONV -->|tool call| MTOOL
+    TURN --> TTS
+    TURN <--> DB
+```
+
+A more detailed component diagram and a per-turn sequence diagram live in
+[`architecture.md`](architecture.md#0-diagrams).
+
 ## Features
 
 - **On-device LLM** — `gemma-4-E2B-it` via Google's

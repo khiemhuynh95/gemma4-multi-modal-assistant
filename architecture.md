@@ -2,6 +2,127 @@
 
 On-device multimodal assistant — Phase 1. Source of truth for components, data flow, contracts, and persistence. Update whenever any of those change (see `CLAUDE.md` → "Keeping docs in sync").
 
+## 0. Diagrams
+
+### Components & data flow
+
+```mermaid
+flowchart TD
+    subgraph UI["UI — Jetpack Compose (Material 3)"]
+        MA[MainActivity]
+        AS["AssistantScreen<br/>thread · input bar · listening sheet<br/>tool chip · per-turn metrics row"]
+        SK["SkillsScreen<br/>instruction skills · MCP servers · built-ins"]
+        TP["ActiveToolsSheet<br/>tune: toggle skills / servers per chat"]
+    end
+
+    VM["AssistantViewModel<br/>uiState: StateFlow · model download · CRUD"]
+
+    subgraph ORCH["VoiceAssistant — orchestrator"]
+        STT["SpeechRecognizer<br/>(live mic → text)"]
+        TURN["handleTurn<br/>stream → sentence flush → TTS<br/>maybeFinalizeTurn + metrics"]
+        CFG["conversationConfig<br/>system prompt + skill catalog + tools"]
+        TTS["KokoroTts (sherpa-onnx) / system TTS"]
+    end
+
+    subgraph ENGINE["LiteRT-LM runtime"]
+        ENG["Engine<br/>LLM + vision = GPU · audio = CPU"]
+        CONV["Conversation<br/>automaticToolCalling · BenchmarkInfo"]
+    end
+
+    subgraph TOOLS["Tools — native function-calling"]
+        BIT["Built-in ToolSets<br/>Device · Info · Network · System"]
+        STOOL["SkillTools.get_skill<br/>(loads full skill body on demand)"]
+        MTOOL["McpServerTool (OpenApiTool)"]
+        MCONN["McpConnection<br/>JSON-RPC / Streamable HTTP"]
+    end
+
+    subgraph DATA["Persistence — Room"]
+        STORE["ConversationStore"]
+        DB[("conversation.db<br/>conversations · turns<br/>instruction_skills · mcp_servers")]
+        MEDIA[/"filesDir/media (images, audio)"/]
+    end
+
+    subgraph EXT["Off-device — network"]
+        HF["Hugging Face<br/>model download"]
+        WEB["Web search / weather APIs"]
+        MCPS["Remote MCP servers"]
+    end
+
+    ANDROID["Android system<br/>AlarmClock · Camera · Audio · Settings"]
+    MODELS["Models<br/>gemma-4-E2B-it.litertlm · Kokoro · silero_vad"]
+
+    MA --> AS
+    MA --> SK
+    AS <--> VM
+    SK <--> VM
+    TP <--> VM
+    VM <--> TURN
+    VM <--> CFG
+
+    STT --> TURN
+    TURN --> CFG
+    CFG --> CONV
+    TURN <-->|sendMessageAsync · token stream| CONV
+    CONV --> ENG
+    ENG -. loads .-> MODELS
+
+    CONV -->|tool call| BIT
+    CONV -->|tool call| STOOL
+    CONV -->|tool call| MTOOL
+    STOOL -. reads .-> STORE
+    MTOOL --> MCONN --> MCPS
+    BIT -. Intents .-> ANDROID
+    BIT -->|web search / weather| WEB
+
+    TURN -->|sentences| TTS
+    TURN <--> STORE
+    STORE --> DB
+    STORE --> MEDIA
+    VM -. download .-> HF
+    HF --> MODELS
+
+    classDef ext fill:#fde2e2,stroke:#d33;
+    class HF,WEB,MCPS ext;
+```
+
+### Per-turn lifecycle (tool-calling + streaming)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant UI as AssistantScreen
+    participant VA as VoiceAssistant
+    participant CV as Conversation (LiteRT-LM)
+    participant TL as Tool (built-in / get_skill / MCP)
+    participant TTS as Kokoro / system TTS
+
+    U->>UI: speak / type / attach media
+    UI->>VA: submitText / beginTurn (+ attachment)
+    Note over VA: handleTurn — record start time, clear turn tools
+    VA->>CV: sendMessageAsync(system prompt + skill catalog + tools + input)
+
+    rect rgb(235,245,255)
+    Note over CV,TL: automaticToolCalling loop (0..n)
+    CV->>CV: prefill, decide if a tool is needed
+    CV->>TL: tool call (name, args)
+    TL-->>CV: result (JSON) — also fires onToolUsed → chip + metrics
+    end
+
+    loop streamed tokens
+        CV-->>VA: text chunk
+        VA->>VA: buffer → flush complete sentences
+        VA->>TTS: speak(sentence)
+        TTS-->>UI: audio + lockstep caption
+    end
+
+    CV-->>VA: generation complete
+    Note over VA: read getBenchmarkInfo() → TurnMetrics<br/>(tools, latency, TTFT, tokens, tok/s)
+    VA->>VA: maybeFinalizeTurn (after speech drains)
+    VA->>UI: append message + metrics row
+    Note over VA: persist turn to Room (ConversationStore)
+```
+
 ## 1. Where Phase 1 sits
 
 The full product is a two-tier cascade: a small on-device model (Gemma 4 E2B) for the easy, private, offline majority, and a larger backend model (Gemma 4 12B) for the hard minority — connected over a private Tailscale / Headscale mesh, never cloud. **Phase 1 builds only the on-device tier.** The backend, the router's "escalate" path, RAG, and the distillation loop are all deferred (see Roadmap). **On-device agent tool-calling has been pulled forward into Phase 1** (see §5b); only external MCP to on-prem systems remains deferred.
