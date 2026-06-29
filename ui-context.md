@@ -25,7 +25,8 @@ Reference: `conversation.html`. The hub for voice / text / image turns and respo
 
 Components:
 - **Navigation drawer (conversations):** opened by a leading hamburger (`menu`) in the top app bar. A `ModalNavigationDrawer` listing all chats (most-recent first) with a "New chat" item at top; each row shows the auto-generated title, highlights the active chat, and has a trailing delete. Tapping a row switches chats (closes the drawer). New/switch resets the model session; see the "Session isolation" gap in `architecture.md` §5.
-- **Top app bar:** leading `menu` (opens drawer); `lock` (primary) + "Assistant" (title-lg); trailing `cloud_off` (on-surface-variant — the always-visible private / offline affordance) + `settings`.
+- **Top app bar:** leading `menu` (opens drawer); `lock` (primary) + "Assistant" (title-lg); trailing `cloud_off` (the private / offline affordance) + `tune` (opens the Active skills & servers sheet) + `extension` (opens the Skills screen) + `settings`.
+- **Active skills & servers sheet** (`ActiveToolsSheet`, `tune` action): a `ModalBottomSheet` listing each instruction skill and each MCP server with a `Switch` to enable/disable on the fly; toggling persists and re-applies to the session.
 - **Message thread:** assistant bubbles = secondary-container / on-secondary-container, 20px corners with a top-left tail; user bubbles = primary / on-primary, top-right tail, with an optional media attachment above the text — an image thumbnail (rounded, 200dp) or an audio chip (music-note icon + "Audio clip").
 - **Input bar** (surface-container): leading camera icon button + an **attach** icon button (`AttachFile`) whose dropdown offers **Photo** (Android Photo Picker, images only) and **Audio** (SAF document picker, `audio/*`); outlined text field ("Type or say something…", 28px radius, min 56dp); trailing mic FAB (primary-container, 56dp, 28px radius). A staged attachment shows as a **chip above the field** (thumbnail / audio icon + clear ✕). Send is enabled when there's text **or** an attachment; the mic swaps to a Send button in either case. No video option — the runtime can't ingest video.
 
@@ -39,6 +40,8 @@ States (implemented in `AssistantScreen.kt`):
 - **(b) Listening** ✅ — input bar is replaced by a bottom sheet (`surfaceContainerHigh`, 28dp top corners): animated waveform bars, "Listening…", a large pulsing mic button (tap to stop). Auto-send on silence (VAD).
 - **(c) Loading vision** — *pending*; arrives with the vision sub-model (M3). Spinner bubble + disabled input.
 - **Speaking** ✅ — assistant bubble shows a `GraphicEq` + "speaking · captions" indicator; captions stream with TTS.
+- **Tool / skill in use** ✅ — when the model invokes an on-device skill (tool-calling), a small pill chip (`tertiaryContainer`, "⚙ <skill>", e.g. "⚙ Flashlight") renders below the live reply, driven by `uiState.activeTool`. Informational only; cleared when the turn finalizes.
+- **Per-turn metrics** ✅ — under each finalized assistant reply, a small `labelSmall` caption (`TurnMetricsRow`) shows the tools invoked ("🔧 …") and stats ("⏱ latency · first-token · 🔢 tokens (in+out) · ⚡ tok/s"), from `Message.metrics` (`TurnMetrics`). Shows for turns generated this session (not reloaded history).
 - **Error** ✅ — surfaced as a `Snackbar` (driven by `uiState.error`).
 
 Mic button maps to the existing voice loop: idle → start; active → stop; speaking → barge-in/interrupt.
@@ -50,6 +53,15 @@ live streaming reply (`assistantResponse`). The opening greeting shows only on a
 **Settings** sheet has a "Clear conversation" action (`clearHistory`) that wipes memory + storage.
 
 Interactions: hold-to-talk → auto-send on silence; tap camera → Camera screen (pending); type + send (pending); tap mic while speaking to barge-in / stop (existing VAD interrupt).
+
+## Screen 3 — Skills (`SkillsScreen.kt`)
+
+Opened from the top app bar `extension` action. A `Scaffold` (back arrow + "Skills" title) listing skills in two sections:
+- **Your skills (instructions)** — user-defined markdown skills (`uiState.instructionSkills`), each a `Card` showing the name + first line of the body, with edit + delete actions and an "Off" chip when disabled. An "Add skill" extended FAB opens the editor. Empty-state copy when none exist.
+- **MCP servers** — configured remote servers (`uiState.mcpServers`), each a `Card` with name, URL, and status (tool count / "Error" / "Disabled"), plus edit + delete. An "Add server" button in the section header opens the MCP editor (name, URL, headers, enabled).
+- **Built-in tools** — `BuiltInSkills.ALL` shown read-only (name, description, a group chip — Device / Info / Network — and a `lock` glyph). Always on; not editable (compiled code).
+
+**Skill editor** (full-screen, opened for add or edit): `Close` (cancel) + "Save" (enabled when name and instructions are non-blank). Fields: name (a short label), a one-line **short description** (this is what's kept in the prompt so the model knows when to load the skill), a large multiline **instructions (markdown)** field (loaded on demand via `get_skill`), and an Enabled switch. Saving persists the skill, injects its markdown into the model's system context, and resets the session so it takes effect immediately. These are behaviour instructions, not callable tools — they don't make network calls.
 
 ## Screen 2 — Camera capture (`CameraScreen.kt`)
 

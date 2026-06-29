@@ -15,12 +15,27 @@ data class Attachment(
     val kind: AttachmentKind,
 )
 
+/**
+ * Per-turn observability shown under an assistant reply: which tools/skills the model invoked, how
+ * long the turn took, and token usage (from LiteRT-LM's `BenchmarkInfo`). Transient — not persisted,
+ * so it appears for turns generated this session, not reloaded history.
+ */
+data class TurnMetrics(
+    val toolsInvoked: List<String> = emptyList(),
+    val latencyMs: Long = 0,
+    val ttftSec: Double = 0.0,        // time to first token
+    val promptTokens: Int = 0,        // prefill (input) tokens
+    val outputTokens: Int = 0,        // decode (generated) tokens
+    val decodeTokensPerSec: Double = 0.0,
+)
+
 /** One finalized, persisted turn shown in the conversation thread. */
 data class Message(
     val id: Long = 0,
     val role: Role,
     val text: String,
     val attachment: Attachment? = null,
+    val metrics: TurnMetrics? = null,
 )
 
 /** A conversation entry for the navigation drawer. */
@@ -39,6 +54,14 @@ data class AssistantUiState(
     val pendingAttachment: Attachment? = null,
     val lastUserUtterance: String = "",
     val assistantResponse: String = "",
+    // Short label of the on-device skill/tool the model just invoked this turn (e.g. "Flashlight"),
+    // or null when no tool ran. Cleared when the turn finalizes. Drives the tool-status chip.
+    val activeTool: String? = null,
+    // User-defined markdown "instruction" skills (managed on the Skills screen). Built-in tools are
+    // compiled and listed read-only from BuiltInSkills.ALL.
+    val instructionSkills: List<com.example.voiceassistant.tools.InstructionSkill> = emptyList(),
+    // Configured remote MCP servers + their last discovery status (tool count / error).
+    val mcpServers: List<com.example.voiceassistant.tools.McpServerInfo> = emptyList(),
     val isSpeaking: Boolean = false,
     val isListening: Boolean = false,
     val isActive: Boolean = false,

@@ -17,13 +17,15 @@ In scope:
 - Two screens: Conversation (hub) and Camera capture.
 - Local-first persistence of the conversation.
 - Streaming responses with text-to-speech + live captions.
+- **Agent tool-calling (assistant agent):** the model invokes on-device "skills" via LiteRT-LM native tool-calling (`ConversationConfig(tools, automaticToolCalling)`) — timers/alarms, flashlight, media volume, calendar, open app, phone call, SMS, Wi-Fi/Bluetooth/DND settings, and read-only info (date/time, battery, connectivity). Plus opt-in **network skills** (web search, weather) via keyless public APIs. See `tools/AssistantTools.kt` and `architecture.md` §5b. Intent-based tools need a `<queries>` entry (Android 11+ visibility); alarms need `com.android.alarm.permission.SET_ALARM`.
+- **Skills management screen** (`SkillsScreen.kt`): users create / edit / delete custom **markdown "instruction" skills** (name + short description + body; persisted in Room `instruction_skills`). Progressive disclosure: only name+description sit in the prompt, the full body loads on demand via the `get_skill` tool and configure **remote MCP servers** (`mcp_servers`; HTTP/Streamable-HTTP only — no stdio on Android — tools discovered and registered when enabled); built-in tools are compiled and shown read-only. A chat-window `tune` panel toggles skills/servers on the fly.
 
 Explicitly OUT of scope for Phase 1 — do not build, do not stub:
-- No backend, no cloud, no remote API of any kind.
-- No RAG, no external tools / function-calling to external systems, no web access.
+- No backend, no cloud, no remote API of our own (the on-device model is never served remotely).
+- No RAG, no external **MCP** to on-prem systems, no agent-OS kernel.
 - No accounts, login, or sync.
 
-These are deferred to later phases (see Roadmap in `architecture.md`). The offline / no-cloud constraint is the product's whole point — treat any cloud dependency as a bug.
+These are deferred to later phases (see Roadmap in `architecture.md`). **On-device tools work fully offline** (airplane mode); the **network skills (web search, weather) deliberately relax the offline guarantee** — they require connectivity and degrade gracefully when there is none. Apart from those explicit, user-invoked network skills, treat any cloud/remote dependency as a bug.
 
 ## Stack
 
@@ -47,7 +49,8 @@ These are deferred to later phases (see Roadmap in `architecture.md`). The offli
 - **Media before text.** When a prompt includes an image, place the image content before the instruction text (model-card requirement) or quality drops.
 - **Don't overthink simple tasks.** The per-turn `InferenceConfig` (visual token budget + thinking on/off) is the on-device "router": simple intents run with a low visual budget and thinking off for low latency; only heavier intents spend compute. See `configFor` in `architecture.md`.
 - **Local-first data.** Persist the raw conversation locally (Room). Store captured images in app-private storage and reference them from the DB — never put bitmaps in SQLite. The prompt sent to the model is a recent window plus a running summary, not the whole history.
-- **Offline is not an error.** The offline / on-device indicator reflects connectivity but never gates functionality.
+- **Offline is not an error.** The offline / on-device indicator reflects connectivity but never gates functionality. On-device tools must keep working in airplane mode; only the explicit network skills may require connectivity, and they must fail soft (return a "can't reach the network" result, never crash).
+- **Tools are typed Kotlin, not prompt parsing.** Add a skill as a `@Tool`-annotated method on a `ToolSet` in `tools/AssistantTools.kt`; register it via `tool(...)` in `VoiceAssistant.conversationConfig()`. Keep descriptions short and imperative, return a JSON-serializable map, and report what ran through the `OnToolUsed` callback so the UI chip works.
 - **Design fidelity.** Build to `ui-context.md` and the mockups (`conversation.html`, `cameras.html`) using the tokens in `DESIGN.md`. The HTML mockups are visual references only — implement in Compose with a Material 3 theme derived from `DESIGN.md`.
 - **Clean, reusable, modular.** Small single-purpose functions, shared logic instead of duplication, and decoupled layers behind interfaces. See `code-standards.md`.
 

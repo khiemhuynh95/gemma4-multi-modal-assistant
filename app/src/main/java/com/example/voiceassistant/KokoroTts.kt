@@ -225,5 +225,22 @@ class KokoroTts(modelDir: File, numThreads: Int = 4) {
         const val MODEL_DIR_NAME = "kokoro-multi-lang-v1_0"
         const val MODEL_URL =
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2"
+
+        /**
+         * Files that MUST be present for sherpa-onnx to build a usable Kokoro voice. If any are
+         * missing (e.g. an interrupted download/extraction), the native `OfflineTts` constructor
+         * returns an invalid handle and the first call into it (`sampleRate()`) SIGSEGVs — a native
+         * crash Kotlin can't catch. So callers must verify completeness via [isModelComplete] before
+         * constructing this class. The `espeak-ng-data/phon*` files are the ones the model config
+         * validator checks (`phontab does not exist` → "Errors found in config!").
+         */
+        private val REQUIRED_FILES = listOf(
+            "model.onnx", "voices.bin", "tokens.txt",
+            "espeak-ng-data/phontab", "espeak-ng-data/phondata", "espeak-ng-data/phonindex",
+        )
+
+        /** True only if every required model file exists and is non-empty. */
+        fun isModelComplete(modelDir: File): Boolean =
+            REQUIRED_FILES.all { rel -> File(modelDir, rel).let { it.exists() && it.length() > 0 } }
     }
 }

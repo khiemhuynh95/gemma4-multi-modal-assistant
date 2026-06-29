@@ -55,14 +55,17 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
                     throw Exception("Server returned HTTP $responseCode: ${connection.responseMessage}")
                 }
                 
-                val length = connection.contentLength
+                // contentLengthLong (not contentLength: Int overflows for files > 2 GB and returns
+                // -1, which previously hid both the progress bar AND any completeness check — a
+                // dropped connection then saved a truncated model that fails to load).
+                val length = connection.contentLengthLong
                 val input = connection.inputStream
                 val output = FileOutputStream(destinationFile)
-                
+
                 val buffer = ByteArray(8192)
                 var bytesRead: Int
                 var totalBytesRead = 0L
-                
+
                 while (input.read(buffer).also { bytesRead = it } != -1) {
                     output.write(buffer, 0, bytesRead)
                     totalBytesRead += bytesRead
@@ -70,13 +73,19 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
                         assistant.setDownloading(true, totalBytesRead.toFloat() / length)
                     }
                 }
-                
+
                 output.close()
                 input.close()
-                
+
+                // Reject an incomplete download instead of saving a broken model that fails at init.
+                if (length > 0 && totalBytesRead != length) {
+                    destinationFile.delete()
+                    throw Exception("Incomplete download: got $totalBytesRead of $length bytes. Check your connection and try again.")
+                }
+
                 assistant.setDownloading(false)
                 assistant.updateModelAvailability()
-                
+
                 if (uiState.value.isPermissionGranted) {
                     onPermissionGranted()
                 }
@@ -93,8 +102,10 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         val modelDir = File(filesDir, KokoroTts.MODEL_DIR_NAME)
 
         viewModelScope.launch(Dispatchers.IO) {
-            // Already extracted? Just (re)load the engine.
-            if (File(modelDir, "model.onnx").exists()) {
+            // Already fully extracted? Just (re)load the engine. A *partial* install (e.g. an
+            // interrupted prior download) falls through and re-downloads — checking only model.onnx
+            // would leave a broken voice that crashes sherpa-onnx on use.
+            if (KokoroTts.isModelComplete(modelDir)) {
                 assistant.refreshTtsEngine()
                 return@launch
             }
@@ -204,6 +215,37 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun clearHistory() {
         assistant.clearHistory()
+    }
+
+    /** Create or update a custom instruction skill, then re-apply to the live model session. */
+    fun saveInstructionSkill(skill: com.example.voiceassistant.tools.InstructionSkill) {
+        assistant.saveInstructionSkill(skill)
+    }
+
+    fun deleteInstructionSkill(id: Long) {
+        assistant.deleteInstructionSkill(id)
+    }
+
+    fun setInstructionSkillEnabled(id: Long, enabled: Boolean) {
+        assistant.setInstructionSkillEnabled(id, enabled)
+    }
+
+    // --- MCP servers ---
+
+    fun saveMcpServer(server: com.example.voiceassistant.tools.McpServer) {
+        assistant.saveMcpServer(server)
+    }
+
+    fun deleteMcpServer(id: Long) {
+        assistant.deleteMcpServer(id)
+    }
+
+    fun setMcpServerEnabled(id: Long, enabled: Boolean) {
+        assistant.setMcpServerEnabled(id, enabled)
+    }
+
+    fun refreshMcpServers() {
+        assistant.refreshMcpServers()
     }
 
     fun newConversation() {
